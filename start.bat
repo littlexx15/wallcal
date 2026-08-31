@@ -2,8 +2,16 @@
 cd /d "%~dp0"
 chcp 65001 >nul
 
+if exist "%~dp0WallCal-1.1.0.exe" (
+  start "" "%~dp0WallCal-1.1.0.exe"
+  exit /b 0
+)
 if exist "%~dp0WallCal-1.0.0.exe" (
   start "" "%~dp0WallCal-1.0.0.exe"
+  exit /b 0
+)
+if exist "%~dp0dist\WallCal-1.1.0.exe" (
+  start "" "%~dp0dist\WallCal-1.1.0.exe"
   exit /b 0
 )
 if exist "%~dp0dist\WallCal-1.0.0.exe" (

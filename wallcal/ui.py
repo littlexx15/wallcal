@@ -12,6 +12,13 @@ import customtkinter as ctk
 
 from . import autostart
 from . import __version__
+from .holidays import (
+    mark_on,
+    official_years,
+    remove_personal,
+    upsert_personal,
+    year_groups,
+)
 from .icon import ensure_icon
 from .memos import is_done, memos_on, pending_on, toggle_done
 from .paths import ICON_PATH
@@ -42,6 +49,20 @@ MONTHS = [
     "十二月",
 ]
 WEEK_HEADER = ["日", "一", "二", "三", "四", "五", "六"]
+
+
+def _short_date(value: str) -> str:
+    day = date.fromisoformat(value[:10])
+    return f"{day.month}/{day.day}"
+
+
+def _compact_range(values: list[str]) -> str:
+    if not values:
+        return "—"
+    days = [date.fromisoformat(v[:10]) for v in values]
+    if len(days) == 1:
+        return _short_date(values[0])
+    return f"{_short_date(values[0])}–{_short_date(values[-1])}（{len(days)}天）"
 
 
 def parse_time(value: str) -> str | None:
@@ -155,6 +176,18 @@ class WallCalWindow(ctk.CTk):
         self.theme_menu.set(current_label)
         self.theme_menu.grid(row=0, column=2, padx=8)
 
+        self.holiday_var = ctk.BooleanVar(
+            value=bool(self.store["settings"].get("show_holidays", True))
+        )
+        self.holiday_switch = ctk.CTkSwitch(
+            bar,
+            text="法定假日",
+            variable=self.holiday_var,
+            command=self._on_toggle_holidays,
+            progress_color=self.theme.ui_accent,
+        )
+        self.holiday_switch.grid(row=0, column=3, padx=6)
+
         self.autostart_var = ctk.BooleanVar(value=bool(self.store["settings"].get("autostart")))
         self.autostart_switch = ctk.CTkSwitch(
             bar,
@@ -163,7 +196,7 @@ class WallCalWindow(ctk.CTk):
             command=self._on_autostart,
             progress_color=self.theme.ui_accent,
         )
-        self.autostart_switch.grid(row=0, column=3, padx=8)
+        self.autostart_switch.grid(row=0, column=4, padx=6)
 
         refresh_btn = ctk.CTkButton(
             bar,
@@ -174,7 +207,7 @@ class WallCalWindow(ctk.CTk):
             text_color=self._on_accent_hex(),
             command=lambda: self.refresh_wallpaper_async("正在刷新壁纸…"),
         )
-        refresh_btn.grid(row=0, column=4, padx=8)
+        refresh_btn.grid(row=0, column=5, padx=6)
         self.quit_btn = ctk.CTkButton(
             bar,
             text="退出",
@@ -186,7 +219,7 @@ class WallCalWindow(ctk.CTk):
             hover_color=self.theme.ui_card,
             command=self.quit_app,
         )
-        self.quit_btn.grid(row=0, column=5, padx=(0, 0))
+        self.quit_btn.grid(row=0, column=6, padx=(0, 0))
 
     def _build_calendar_panel(self) -> None:
         panel = ctk.CTkFrame(
@@ -262,7 +295,7 @@ class WallCalWindow(ctk.CTk):
         panel.grid(row=1, column=1, sticky="nsew", padx=(8, 20), pady=10)
         self.memo_panel = panel
         panel.grid_columnconfigure(0, weight=1)
-        panel.grid_rowconfigure(1, weight=1)
+        panel.grid_rowconfigure(2, weight=1)
 
         self.day_title = ctk.CTkLabel(
             panel,
@@ -271,13 +304,21 @@ class WallCalWindow(ctk.CTk):
             text_color=self.theme.ui_text,
             anchor="w",
         )
-        self.day_title.grid(row=0, column=0, sticky="ew", padx=18, pady=(16, 8))
+        self.day_title.grid(row=0, column=0, sticky="ew", padx=18, pady=(16, 4))
+        self.holiday_banner = ctk.CTkLabel(
+            panel,
+            text="",
+            anchor="w",
+            font=ctk.CTkFont(family="Microsoft YaHei", size=13),
+            text_color=self.theme.ui_accent,
+        )
+        self.holiday_banner.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 4))
 
         self.memo_list = ctk.CTkScrollableFrame(panel, fg_color="transparent")
-        self.memo_list.grid(row=1, column=0, sticky="nsew", padx=10, pady=4)
+        self.memo_list.grid(row=2, column=0, sticky="nsew", padx=10, pady=4)
 
         form = ctk.CTkFrame(panel, fg_color="transparent")
-        form.grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 16))
+        form.grid(row=3, column=0, sticky="ew", padx=16, pady=(8, 16))
         form.grid_columnconfigure(0, weight=1)
 
         hint = ctk.CTkLabel(
@@ -344,10 +385,30 @@ class WallCalWindow(ctk.CTk):
         self.cancel_edit_btn.grid(row=3, column=3, sticky="e", pady=(8, 0))
         self.cancel_edit_btn.grid_remove()
 
+        holiday_bar = ctk.CTkFrame(form, fg_color="transparent")
+        holiday_bar.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        quiet = {
+            "height": 30,
+            "fg_color": "transparent",
+            "border_width": 1,
+            "border_color": self.theme.ui_border,
+            "text_color": self.theme.ui_muted,
+            "hover_color": self.theme.ui_input,
+        }
+        ctk.CTkButton(
+            holiday_bar, text="标成年假", width=84, command=self._mark_leave, **quiet
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            holiday_bar, text="清除年假", width=84, command=self._clear_personal_mark, **quiet
+        ).pack(side="left", padx=6)
+        ctk.CTkButton(
+            holiday_bar, text="本年假日一览", width=104, command=self._show_year_holidays, **quiet
+        ).pack(side="left", padx=6)
+
     def _build_status(self) -> None:
         self.status = ctk.CTkLabel(
             self,
-            text="护眼纸色界面。点左边选日子，右边写安排，桌面整月日历会跟着刷新。",
+            text="格子里 休=法定放假，年=自己的年假。点「本年假日一览」看全年安排。",
             font=ctk.CTkFont(family="Microsoft YaHei", size=12),
             text_color=self.theme.ui_muted,
             anchor="w",
@@ -377,7 +438,13 @@ class WallCalWindow(ctk.CTk):
                 is_today = day == today
                 is_selected = day == self.selected
                 label = str(day.day)
-                if items:
+                holiday = None
+                if self.store["settings"].get("show_holidays", True):
+                    holiday = mark_on(day, self.store.get("personal_holidays") or [])
+                if holiday:
+                    tag = {"off": "休", "leave": "年"}.get(holiday.kind, "")
+                    label = f"{day.day} {tag}".strip()
+                elif items:
                     label = f"{day.day}  ·{len(items)}"
 
                 fg = "transparent"
@@ -396,6 +463,9 @@ class WallCalWindow(ctk.CTk):
                     fg = self.theme.ui_input
                     border = 2
                     border_color = self.theme.ui_accent
+                elif holiday and holiday.kind == "off":
+                    fg = self.theme.ui_input
+                    text_color = "#A56A60"
                 elif items:
                     fg = self.theme.ui_input
                     text_color = self.theme.ui_accent
@@ -427,6 +497,17 @@ class WallCalWindow(ctk.CTk):
         self.day_title.configure(
             text=f"{self.selected.month}月{self.selected.day}日  {weekday} {flag}    {len(pending)} 件待办"
         )
+        holiday = None
+        if self.store["settings"].get("show_holidays", True):
+            holiday = mark_on(self.selected, self.store.get("personal_holidays") or [])
+        if holiday:
+            if holiday.kind == "off":
+                banner = f"法定放假 · {holiday.name}"
+            else:
+                banner = f"个人年假 · {holiday.name}"
+            self.holiday_banner.configure(text=banner)
+        else:
+            self.holiday_banner.configure(text="不是法定假日。可以把这一天标成自己的年假。")
 
         for child in self.memo_list.winfo_children():
             child.destroy()
@@ -671,6 +752,85 @@ class WallCalWindow(ctk.CTk):
             text_color=self.theme.ui_text,
             placeholder_text_color=self.theme.ui_muted,
         )
+
+    def _on_toggle_holidays(self) -> None:
+        enabled = bool(self.holiday_var.get())
+        self.store["settings"]["show_holidays"] = enabled
+        save(self.store)
+        self.redraw()
+        self.refresh_wallpaper_async("已显示法定假日" if enabled else "已隐藏法定假日")
+
+    def _mark_leave(self) -> None:
+        personal = list(self.store.get("personal_holidays") or [])
+        official = mark_on(self.selected, [])
+        if official and official.kind == "off":
+            self._set_status("这一天已经是法定放假，不用再标年假")
+            return
+        self.store["personal_holidays"] = upsert_personal(
+            personal, self.selected, kind="leave", name="年假"
+        )
+        save(self.store)
+        self.redraw()
+        self.refresh_wallpaper_async("已标成年假，壁纸刷新中")
+
+    def _clear_personal_mark(self) -> None:
+        personal = list(self.store.get("personal_holidays") or [])
+        self.store["personal_holidays"] = remove_personal(personal, self.selected)
+        save(self.store)
+        self.redraw()
+        self.refresh_wallpaper_async("已清除这一天的个人假期标记")
+
+    def _show_year_holidays(self) -> None:
+        year = self.view_year
+        win = ctk.CTkToplevel(self)
+        win.title(f"{year} 年假日一览")
+        win.geometry("520x520")
+        win.transient(self)
+        box = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        box.pack(fill="both", expand=True, padx=16, pady=16)
+        groups = year_groups(year)
+        head = ctk.CTkLabel(
+            box,
+            text=f"{year} 年国务院法定节假日",
+            font=ctk.CTkFont(family="Microsoft YaHei", size=18, weight="bold"),
+            anchor="w",
+        )
+        head.pack(fill="x", pady=(0, 8))
+        if not groups:
+            ctk.CTkLabel(
+                box,
+                text="这一年的放假安排还没写进软件。\n国务院一般在年底公布下一年。\n公布后更新壁历即可；也可以先把某天标成自己的年假。",
+                justify="left",
+                font=ctk.CTkFont(family="Microsoft YaHei", size=14),
+            ).pack(fill="x", pady=8)
+        else:
+            source = "来源：国务院办公厅通知，只标放假，不标调休上班。"
+            ctk.CTkLabel(
+                box,
+                text=source,
+                justify="left",
+                font=ctk.CTkFont(family="Microsoft YaHei", size=12),
+                text_color=self.theme.ui_muted,
+            ).pack(fill="x", pady=(0, 10))
+            for group in groups:
+                off_text = _compact_range(group["off"])
+                line = f"{group['name']}    {off_text}"
+                ctk.CTkLabel(
+                    box,
+                    text=line,
+                    anchor="w",
+                    justify="left",
+                    font=ctk.CTkFont(family="Microsoft YaHei", size=14),
+                ).pack(fill="x", pady=4)
+        years = "、".join(str(y) for y in official_years())
+        ctk.CTkLabel(
+            box,
+            text=f"软件已内置：{years}。选中某一天，可用「标成年假」记下自己的带薪假。",
+            justify="left",
+            wraplength=460,
+            font=ctk.CTkFont(family="Microsoft YaHei", size=12),
+            text_color=self.theme.ui_muted,
+        ).pack(fill="x", pady=(16, 0))
 
     def _on_autostart(self) -> None:
         enabled = bool(self.autostart_var.get())

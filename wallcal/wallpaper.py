@@ -8,6 +8,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from .fonts import font
+from .holidays import mark_on, month_counts, next_rest_day
 from .memos import daily_habits, events_on, is_done, month_stats, pending_on
 from .paths import DATA_DIR, WALLPAPER_PATH
 from .themes import Theme, get_theme, tag_color
@@ -143,8 +144,10 @@ def render_wallpaper(
 ) -> Path:
     now = now or datetime.now()
     today = now.date()
-    theme = get_theme(state.get("settings", {}).get("theme", "ink"))
+    theme = get_theme(state.get("settings", {}).get("theme", "eye"))
     memos = state.get("memos") or []
+    show_holidays = bool(state.get("settings", {}).get("show_holidays", True))
+    personal = state.get("personal_holidays") or []
     width, height = size or screen_size()
     s = Scale(width, height)
 
@@ -158,17 +161,27 @@ def render_wallpaper(
     right = width - margin
 
     header_h = s(88)
-    _draw_header(img, theme, s, now, today, memos, (left, top, right, top + header_h))
+    _draw_header(
+        img,
+        theme,
+        s,
+        now,
+        today,
+        memos,
+        (left, top, right, top + header_h),
+        show_holidays,
+        personal,
+    )
 
     cal_box = (left, top + header_h + s(12), right, bottom)
     img = rounded_card(img, cal_box, s(24), theme.card, theme.card_line, max(s(1), 1))
-    _draw_month_grid(img, theme, s, memos, today, cal_box)
+    _draw_month_grid(img, theme, s, memos, today, cal_box, show_holidays, personal)
 
     draw = ImageDraw.Draw(img)
     put_text(
         draw,
         (width / 2, height - s(20)),
-        "壁历  ·  整月日程都在格子里，改备忘会马上刷新到桌面",
+        "壁历  ·  休 法定放假    年 年假    写备忘会马上刷新到桌面",
         font(s(15)),
         theme.muted,
         anchor="mm",
@@ -211,6 +224,8 @@ def _draw_header(
     today: date,
     memos: list[dict[str, Any]],
     box: tuple[int, int, int, int],
+    show_holidays: bool,
+    personal: list[dict[str, Any]],
 ) -> None:
     draw = ImageDraw.Draw(img)
     x0, y0, x1, y1 = box
@@ -229,13 +244,33 @@ def _draw_header(
     stats = f"今天 {today.day} 日 · {today_n} 件     本月待办 {pending}     已完成 {done}"
     put_text(draw, (x1, y0 + s(6)), stats, font(s(18)), theme.accent, anchor="rt")
 
+    extras: list[str] = []
+    if show_holidays:
+        off, leave = month_counts(today.year, today.month, personal)
+        bits = []
+        if off:
+            bits.append(f"放假 {off} 天")
+        if leave:
+            bits.append(f"年假 {leave} 天")
+        if bits:
+            extras.append("本月  " + "  ·  ".join(bits))
+        today_mark = mark_on(today, personal)
+        if today_mark and today_mark.kind != "work":
+            extras.append(today_mark.name)
+        elif not bits:
+            nxt = next_rest_day(today, personal)
+            if nxt:
+                day, mark = nxt
+                extras.append(f"下次假期  {mark.name}  {day.month}/{day.day}")
     habits = daily_habits(memos, today)
     if habits:
         names = "、".join((m.get("title") or "") for m in habits[:4] if m.get("title"))
+        extras.append(f"每日  {names}")
+    if extras:
         put_text(
             draw,
             (x1, y0 + s(40)),
-            f"每日  {names}",
+            "    ".join(extras[:2]),
             font(s(15)),
             theme.muted,
             anchor="rt",
@@ -249,6 +284,8 @@ def _draw_month_grid(
     memos: list[dict[str, Any]],
     today: date,
     box: tuple[int, int, int, int],
+    show_holidays: bool,
+    personal: list[dict[str, Any]],
 ) -> None:
     draw = ImageDraw.Draw(img)
     x0, y0, x1, y1 = box
@@ -284,6 +321,8 @@ def _draw_month_grid(
                 day,
                 today,
                 (cx, cy, cx + cell_w, cy + cell_h),
+                show_holidays,
+                personal,
             )
     composed = Image.alpha_composite(img, overlay)
     img.paste(composed)
@@ -297,6 +336,8 @@ def _draw_day_cell(
     day: date,
     today: date,
     box: tuple[float, float, float, float],
+    show_holidays: bool,
+    personal: list[dict[str, Any]],
 ) -> None:
     inset = s(4)
     x0, y0, x1, y1 = box[0] + inset, box[1] + inset, box[2] - inset, box[3] - inset
@@ -305,6 +346,7 @@ def _draw_day_cell(
     is_past = day < today
     weekend = day.weekday() >= 5
     items = events_on(memos, day, skip_daily=True, include_done=True)
+    holiday = mark_on(day, personal) if show_holidays else None
 
     radius = s(10)
     if is_today:
@@ -314,6 +356,18 @@ def _draw_day_cell(
             fill=with_alpha(theme.accent, 38),
             outline=with_alpha(theme.accent, 210),
             width=max(s(2), 1),
+        )
+    elif holiday and holiday.kind == "off":
+        draw.rounded_rectangle(
+            (x0, y0, x1, y1),
+            radius=radius,
+            fill=with_alpha(theme.weekend, 36),
+        )
+    elif holiday and holiday.kind == "leave":
+        draw.rounded_rectangle(
+            (x0, y0, x1, y1),
+            radius=radius,
+            fill=with_alpha(theme.life, 36),
         )
     elif in_month and items:
         draw.rounded_rectangle(
@@ -332,6 +386,8 @@ def _draw_day_cell(
         num_fill = theme.other_month
     elif is_today:
         num_fill = theme.accent
+    elif holiday and holiday.kind == "off":
+        num_fill = theme.weekend
     elif weekend:
         num_fill = theme.weekend
     else:
@@ -340,34 +396,53 @@ def _draw_day_cell(
     num_font = font(s(18), bold=True)
     put_text(draw, (x0 + s(10), y0 + s(6)), str(day.day), num_font, num_fill)
 
-    if is_today:
-        put_text(
-            draw,
-            (x1 - s(10), y0 + s(8)),
-            "今天",
-            font(s(13), bold=True),
-            theme.accent,
-            anchor="rt",
-        )
+    badge = ""
+    badge_color = theme.muted
+    if holiday and holiday.kind == "off":
+        badge, badge_color = "休", theme.weekend
+    elif holiday and holiday.kind == "leave":
+        badge, badge_color = "年", theme.life
+    elif is_today:
+        badge, badge_color = "今天", theme.accent
     elif in_month:
         pending_n = sum(1 for m in items if not is_done(m, day))
         done_n = sum(1 for m in items if is_done(m, day))
         if pending_n or done_n:
             badge = f"{pending_n}" if not done_n else f"{done_n}✓" if not pending_n else f"{pending_n}/{pending_n + done_n}"
-            put_text(
-                draw,
-                (x1 - s(10), y0 + s(8)),
-                badge,
-                font(s(13)),
-                theme.muted if is_past else theme.accent,
-                anchor="rt",
-            )
+            badge_color = theme.muted if is_past else theme.accent
+    if is_today and holiday:
+        badge = {"off": "今休", "leave": "今年"}.get(holiday.kind, "今天")
+        badge_color = theme.accent
+    if badge:
+        put_text(
+            draw,
+            (x1 - s(10), y0 + s(8)),
+            badge,
+            font(s(13), bold=True if holiday or is_today else False),
+            badge_color,
+            anchor="rt",
+        )
 
-    if not items:
-        return
+    extra_lines: list[tuple[str, tuple[int, int, int]]] = []
+    if holiday and in_month:
+        label = holiday.name
+        color = theme.weekend if holiday.kind == "off" else theme.life
+        extra_lines.append((label, color))
 
     line_h = s(22)
     text_top = y0 + s(32)
+    if extra_lines:
+        put_text(
+            draw,
+            (x0 + s(10), text_top),
+            ellipsize(draw, extra_lines[0][0], font(s(13), bold=True), (x1 - s(12)) - (x0 + s(10))),
+            font(s(13), bold=True),
+            extra_lines[0][1],
+        )
+        text_top += s(20)
+
+    if not items:
+        return
     avail = y1 - text_top - s(6)
     max_lines = max(1, int(avail // line_h))
     shown = items[:max_lines]

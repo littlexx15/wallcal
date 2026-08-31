@@ -17,8 +17,10 @@ DEFAULT_STATE: dict[str, Any] = {
         "theme": "eye",
         "autostart": False,
         "first_run": True,
+        "show_holidays": True,
     },
     "memos": [],
+    "personal_holidays": [],
 }
 
 
@@ -42,6 +44,16 @@ def load() -> dict[str, Any]:
         state["settings"].update(raw.get("settings") or {})
         memos = raw.get("memos") or []
         state["memos"] = [_normalize_memo(m) for m in memos if isinstance(m, dict)]
+        personal = raw.get("personal_holidays") or []
+        state["personal_holidays"] = [
+            {
+                "date": str(item.get("date") or "")[:10],
+                "kind": str(item.get("kind") or "leave"),
+                "name": str(item.get("name") or "年假"),
+            }
+            for item in personal
+            if isinstance(item, dict) and item.get("date")
+        ]
         return state
 
 
