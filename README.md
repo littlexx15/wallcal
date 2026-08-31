@@ -1,11 +1,11 @@
 # 壁历 WallCal
 
-**版本 v1.1.0** · Windows 桌面日历备忘录。
+**版本 v1.2.0** · Windows 桌面日历备忘录。
 
 把当月日历和每天的安排画成一张壁纸，铺在桌面上。换一天、写一条备忘，壁纸马上刷新。
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0e7c66)
-![Version](https://img.shields.io/badge/version-1.1.0-5A8062)
+![Version](https://img.shields.io/badge/version-1.2.0-5A8062)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -18,13 +18,14 @@
 - 生活 / 工作 / 重要 标签，可每天或每周重复
 - 护眼、宣纸、墨夜、青瓷 四种主题
 - 开机启动（可选）
+- GitHub 账号云同步：换电脑登录同一账号，待办和年假会对齐
 
 ## 其他电脑怎么用
 
 ### 方式一：下载绿色软件（推荐）
 
 1. 打开 [Releases](https://github.com/littlexx15/wallcal/releases)
-2. 下载最新的 `WallCal-1.1.0.exe`
+2. 下载最新的 `WallCal-1.2.0.exe`
 3. 双击运行（不用安装 Python）
 
 备忘数据存在当前 Windows 用户的 `%APPDATA%\WallCal\`，换电脑不会自动同步，但源码和软件可以重复下载。
@@ -53,6 +54,15 @@ python main.py
 
 壁纸本身点不了，写备忘请用窗口。
 
+### 多台电脑同步
+
+1. 点窗口上的 **云同步**
+2. 用 GitHub 账号创建一个有 `gist` 权限的令牌并登录
+3. 本机会把待办上传到你的**私有** Gist
+4. 另一台电脑安装壁历，用**同一个 GitHub 账号**登录，点立即同步
+
+令牌只存在本机 `%APPDATA%\WallCal\sync_auth.json`，不会放进待办文件里。
+
 ## 自己打包
 
 ```bat
@@ -60,7 +70,7 @@ python -m pip install -r requirements.txt pyinstaller
 python pack.py
 ```
 
-生成文件在 `dist\WallCal-1.1.0.exe`。
+生成文件在 `dist\WallCal-1.2.0.exe`。
 
 ## 许可证
 

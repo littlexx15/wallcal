@@ -22,7 +22,8 @@ from .holidays import (
 from .icon import ensure_icon
 from .memos import is_done, memos_on, pending_on, toggle_done
 from .paths import ICON_PATH
-from .storage import ensure_welcome, load, new_memo, save
+from .storage import ensure_welcome, load, new_memo, remember_deleted, save, touch_memo
+from . import sync as cloudsync
 from .themes import (
     REPEAT_FROM_LABEL,
     REPEAT_KEYS,
@@ -119,12 +120,18 @@ class WallCalWindow(ctk.CTk):
         self._want_new_day = False
         self._pending_wallpaper = None
         self._pending_status: str | None = None
+        self._sync_busy = False
+        self._want_sync_pull = False
+        self._want_sync_push = False
+        self._want_reload_ui = False
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.after(80, self.show_window)
         self.after(200, self._pump_flags)
         self.after(400, lambda: self.title_entry.focus_set())
+        if cloudsync.logged_in():
+            self.after(900, self._queue_sync_pull)
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
@@ -208,6 +215,18 @@ class WallCalWindow(ctk.CTk):
             command=lambda: self.refresh_wallpaper_async("正在刷新壁纸…"),
         )
         refresh_btn.grid(row=0, column=5, padx=6)
+        self.sync_btn = ctk.CTkButton(
+            bar,
+            text="云同步",
+            width=72,
+            fg_color="transparent",
+            border_width=1,
+            border_color=self.theme.ui_border,
+            text_color=self.theme.ui_text,
+            hover_color=self.theme.ui_card,
+            command=self._open_sync_window,
+        )
+        self.sync_btn.grid(row=0, column=6, padx=6)
         self.quit_btn = ctk.CTkButton(
             bar,
             text="退出",
@@ -219,7 +238,7 @@ class WallCalWindow(ctk.CTk):
             hover_color=self.theme.ui_card,
             command=self.quit_app,
         )
-        self.quit_btn.grid(row=0, column=6, padx=(0, 0))
+        self.quit_btn.grid(row=0, column=7, padx=(0, 0))
 
     def _build_calendar_panel(self) -> None:
         panel = ctk.CTkFrame(
@@ -649,6 +668,7 @@ class WallCalWindow(ctk.CTk):
                 memo["tag"] = tag
                 memo["repeat"] = repeat
                 memo["date"] = self.selected.isoformat()
+                touch_memo(memo)
             self.editing_id = None
             self.submit_btn.configure(text="添加备忘")
             self.cancel_edit_btn.grid_remove()
@@ -667,7 +687,7 @@ class WallCalWindow(ctk.CTk):
 
         self.title_entry.delete(0, "end")
         self.time_entry.delete(0, "end")
-        save(self.store)
+        self._persist()
         self.redraw()
         self.refresh_wallpaper_async()
 
@@ -691,17 +711,19 @@ class WallCalWindow(ctk.CTk):
 
     def _toggle_done(self, memo: dict[str, Any]) -> None:
         toggle_done(memo, self.selected)
-        save(self.store)
+        touch_memo(memo)
+        self._persist()
         self.redraw()
         self.refresh_wallpaper_async("状态已更新，壁纸刷新中")
 
     def _delete_memo(self, memo: dict[str, Any]) -> None:
         if not messagebox.askyesno("删除备忘", f"删除「{memo.get('title')}」？"):
             return
+        remember_deleted(self.store, str(memo["id"]))
         self.store["memos"] = [m for m in self.store["memos"] if m["id"] != memo["id"]]
         if self.editing_id == memo["id"]:
             self._cancel_edit()
-        save(self.store)
+        self._persist()
         self.redraw()
         self.refresh_wallpaper_async("已删除，壁纸刷新中")
 
@@ -709,7 +731,7 @@ class WallCalWindow(ctk.CTk):
         key = next((k for k, t in THEMES.items() if t.label == label), "eye")
         self.store["settings"]["theme"] = key
         self.theme = get_theme(key)
-        save(self.store)
+        self._persist()
         ctk.set_appearance_mode(self.theme.ui_mode)
         self._apply_chrome()
         self.redraw()
@@ -737,6 +759,12 @@ class WallCalWindow(ctk.CTk):
             hover_color=self.theme.ui_hover,
             text_color=self._on_accent_hex(),
         )
+        if hasattr(self, "sync_btn"):
+            self.sync_btn.configure(
+                border_color=self.theme.ui_border,
+                text_color=self.theme.ui_text,
+                hover_color=self.theme.ui_card,
+            )
         if hasattr(self, "quit_btn"):
             self.quit_btn.configure(
                 border_color=self.theme.ui_border,
@@ -756,7 +784,7 @@ class WallCalWindow(ctk.CTk):
     def _on_toggle_holidays(self) -> None:
         enabled = bool(self.holiday_var.get())
         self.store["settings"]["show_holidays"] = enabled
-        save(self.store)
+        self._persist()
         self.redraw()
         self.refresh_wallpaper_async("已显示法定假日" if enabled else "已隐藏法定假日")
 
@@ -769,14 +797,14 @@ class WallCalWindow(ctk.CTk):
         self.store["personal_holidays"] = upsert_personal(
             personal, self.selected, kind="leave", name="年假"
         )
-        save(self.store)
+        self._persist()
         self.redraw()
         self.refresh_wallpaper_async("已标成年假，壁纸刷新中")
 
     def _clear_personal_mark(self) -> None:
         personal = list(self.store.get("personal_holidays") or [])
         self.store["personal_holidays"] = remove_personal(personal, self.selected)
-        save(self.store)
+        self._persist()
         self.redraw()
         self.refresh_wallpaper_async("已清除这一天的个人假期标记")
 
@@ -852,6 +880,148 @@ class WallCalWindow(ctk.CTk):
     def request_new_day(self) -> None:
         self._want_new_day = True
 
+    def _persist(self) -> None:
+        save(self.store)
+        self._queue_sync_push()
+
+    def _queue_sync_push(self) -> None:
+        if cloudsync.autosync_enabled():
+            self._want_sync_push = True
+
+    def _queue_sync_pull(self) -> None:
+        if cloudsync.logged_in():
+            self._want_sync_pull = True
+
+    def _start_sync_job(self, mode: str) -> None:
+        if self._sync_busy:
+            return
+        self._sync_busy = True
+        snapshot = deepcopy(self.store)
+
+        def job() -> None:
+            try:
+                if mode == "pull":
+                    merged, message = cloudsync.pull_and_merge(snapshot)
+                    self.store = merged
+                    save(self.store)
+                    self._want_reload_ui = True
+                    self._pending_status = message
+                    self.refresh_wallpaper_async()
+                else:
+                    message = cloudsync.push_state(snapshot)
+                    self._pending_status = message
+            except Exception as exc:
+                self._pending_status = f"同步失败：{exc}"
+            finally:
+                self._sync_busy = False
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _open_sync_window(self) -> None:
+        win = ctk.CTkToplevel(self)
+        win.title("云同步")
+        win.geometry("560x420")
+        win.transient(self)
+        pad = ctk.CTkFrame(win, fg_color="transparent")
+        pad.pack(fill="both", expand=True, padx=20, pady=18)
+
+        auth = cloudsync.load_auth()
+        title = ctk.CTkLabel(
+            pad,
+            text="用 GitHub 账号同步待办",
+            font=ctk.CTkFont(family="Microsoft YaHei", size=20, weight="bold"),
+            anchor="w",
+        )
+        title.pack(fill="x")
+        hint = ctk.CTkLabel(
+            pad,
+            text="登录后，待办、年假会存到你的 GitHub 私有 Gist。换电脑用同一个账号登录就能拉下来。",
+            justify="left",
+            wraplength=500,
+            font=ctk.CTkFont(family="Microsoft YaHei", size=13),
+            text_color=self.theme.ui_muted,
+        )
+        hint.pack(fill="x", pady=(6, 12))
+
+        status = ctk.CTkLabel(
+            pad,
+            text="",
+            justify="left",
+            anchor="w",
+            font=ctk.CTkFont(family="Microsoft YaHei", size=13),
+        )
+        status.pack(fill="x", pady=(0, 8))
+
+        token_box = ctk.CTkEntry(pad, placeholder_text="粘贴 GitHub 令牌（gist 权限）", show="*", height=38)
+        detected = cloudsync.detect_gh_token()
+        if detected and not auth.get("token"):
+            token_box.insert(0, detected)
+
+        def refresh_status() -> None:
+            info = cloudsync.load_auth()
+            if info.get("token"):
+                last = info.get("last_sync") or "还没有同步过"
+                status.configure(text=f"已登录  @{info.get('login')}    上次同步：{last}")
+                token_box.pack_forget()
+            else:
+                status.configure(text="还没登录。点下面创建令牌，勾选 gist，生成后粘贴过来。")
+                token_box.pack(fill="x", pady=6)
+
+        def do_login() -> None:
+            try:
+                cloudsync.login(token_box.get().strip() or cloudsync.detect_gh_token())
+                refresh_status()
+                self._queue_sync_pull()
+                self._set_status("登录成功，正在同步…")
+            except Exception as exc:
+                messagebox.showerror("登录失败", str(exc))
+
+        def do_sync() -> None:
+            self._want_sync_pull = True
+            win.destroy()
+
+        def do_logout() -> None:
+            cloudsync.clear_auth()
+            refresh_status()
+            token_box.pack(fill="x", pady=6)
+
+        btns = ctk.CTkFrame(pad, fg_color="transparent")
+        btns.pack(fill="x", pady=(8, 0))
+        ctk.CTkButton(
+            btns,
+            text="打开创建令牌网页",
+            width=140,
+            command=lambda: __import__("webbrowser").open(cloudsync.TOKEN_HELP),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btns, text="登录", width=80, command=do_login).pack(side="left", padx=4)
+        ctk.CTkButton(btns, text="立即同步", width=90, command=do_sync).pack(side="left", padx=4)
+        ctk.CTkButton(
+            btns,
+            text="退出登录",
+            width=90,
+            fg_color="transparent",
+            border_width=1,
+            command=do_logout,
+        ).pack(side="left", padx=4)
+
+        auto_var = ctk.BooleanVar(value=bool(auth.get("autosync", True)))
+
+        def on_auto() -> None:
+            info = cloudsync.load_auth()
+            if not info.get("token"):
+                return
+            info["autosync"] = bool(auto_var.get())
+            cloudsync.save_auth(info)
+
+        ctk.CTkSwitch(
+            pad,
+            text="改动后自动同步",
+            variable=auto_var,
+            command=on_auto,
+            progress_color=self.theme.ui_accent,
+        ).pack(anchor="w", pady=(16, 0))
+        refresh_status()
+
     def _pump_flags(self) -> None:
         try:
             if self._want_show:
@@ -860,6 +1030,14 @@ class WallCalWindow(ctk.CTk):
             if self._want_new_day:
                 self._want_new_day = False
                 self.on_new_day()
+            if self._want_reload_ui:
+                self._want_reload_ui = False
+                self.theme = get_theme(self.store["settings"].get("theme", "eye"))
+                ctk.set_appearance_mode(self.theme.ui_mode)
+                self._apply_chrome()
+                if hasattr(self, "holiday_var"):
+                    self.holiday_var.set(bool(self.store["settings"].get("show_holidays", True)))
+                self.redraw()
             if self._pending_status is not None:
                 text = self._pending_status
                 self._pending_status = None
@@ -868,6 +1046,12 @@ class WallCalWindow(ctk.CTk):
                 path = self._pending_wallpaper
                 self._pending_wallpaper = None
                 self._apply_rendered_wallpaper(path)
+            if not self._sync_busy and self._want_sync_pull:
+                self._want_sync_pull = False
+                self._start_sync_job("pull")
+            elif not self._sync_busy and self._want_sync_push:
+                self._want_sync_push = False
+                self._start_sync_job("push")
         except Exception:
             pass
         self.after(150, self._pump_flags)

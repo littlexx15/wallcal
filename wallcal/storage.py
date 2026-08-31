@@ -21,6 +21,8 @@ DEFAULT_STATE: dict[str, Any] = {
     },
     "memos": [],
     "personal_holidays": [],
+    "deleted_ids": [],
+    "updated_at": "",
 }
 
 
@@ -54,11 +56,14 @@ def load() -> dict[str, Any]:
             for item in personal
             if isinstance(item, dict) and item.get("date")
         ]
+        state["deleted_ids"] = [str(x) for x in (raw.get("deleted_ids") or [])]
+        state["updated_at"] = str(raw.get("updated_at") or "")
         return state
 
 
 def save(state: dict[str, Any]) -> None:
     with _lock:
+        state["updated_at"] = datetime.now().isoformat(timespec="seconds")
         _write(STORE_PATH, state)
 
 
@@ -83,6 +88,7 @@ def _normalize_memo(memo: dict[str, Any]) -> dict[str, Any]:
         "repeat": str(memo.get("repeat") or "none"),
         "done_dates": [str(x) for x in (memo.get("done_dates") or [])],
         "created_at": str(memo.get("created_at") or datetime.now().isoformat(timespec="seconds")),
+        "updated_at": str(memo.get("updated_at") or memo.get("created_at") or datetime.now().isoformat(timespec="seconds")),
     }
 
 
@@ -106,8 +112,20 @@ def new_memo(
             "repeat": repeat,
             "done_dates": [],
             "created_at": datetime.now().isoformat(timespec="seconds"),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
     )
+
+
+def touch_memo(memo: dict[str, Any]) -> None:
+    memo["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+
+def remember_deleted(state: dict[str, Any], memo_id: str) -> None:
+    ids = [str(x) for x in (state.get("deleted_ids") or [])]
+    if memo_id not in ids:
+        ids.append(memo_id)
+    state["deleted_ids"] = ids[-500:]
 
 
 def ensure_welcome(state: dict[str, Any]) -> bool:
