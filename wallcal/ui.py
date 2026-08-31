@@ -1,0 +1,769 @@
+from __future__ import annotations
+
+import calendar
+import re
+import threading
+from copy import deepcopy
+from datetime import date
+from tkinter import messagebox
+from typing import Any
+
+import customtkinter as ctk
+
+from . import autostart
+from . import __version__
+from .icon import ensure_icon
+from .memos import is_done, memos_on, pending_on, toggle_done
+from .paths import ICON_PATH
+from .storage import ensure_welcome, load, new_memo, save
+from .themes import (
+    REPEAT_FROM_LABEL,
+    REPEAT_KEYS,
+    TAG_FROM_LABEL,
+    TAG_KEYS,
+    THEMES,
+    get_theme,
+    tag_hex,
+)
+from .wallpaper import render_wallpaper
+
+MONTHS = [
+    "一月",
+    "二月",
+    "三月",
+    "四月",
+    "五月",
+    "六月",
+    "七月",
+    "八月",
+    "九月",
+    "十月",
+    "十一月",
+    "十二月",
+]
+WEEK_HEADER = ["日", "一", "二", "三", "四", "五", "六"]
+
+
+def parse_time(value: str) -> str | None:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    if not match:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if 0 <= hour <= 23 and 0 <= minute <= 59:
+        return f"{hour:02d}:{minute:02d}"
+    return None
+
+
+class WallCalWindow(ctk.CTk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.store = load()
+        if ensure_welcome(self.store):
+            save(self.store)
+        theme_key = self.store["settings"].get("theme") or "eye"
+        if theme_key == "dusk":
+            theme_key = "celadon"
+            self.store["settings"]["theme"] = "eye"
+            save(self.store)
+        if theme_key == "ink":
+            theme_key = "eye"
+            self.store["settings"]["theme"] = "eye"
+            save(self.store)
+        self.theme = get_theme(theme_key)
+        ctk.set_appearance_mode(self.theme.ui_mode)
+        ctk.set_default_color_theme("green")
+
+        self.title(f"壁历 v{__version__} — 在这里写备忘")
+        self.geometry("1100x740+50+36")
+        self.minsize(980, 660)
+        self.configure(fg_color=self.theme.ui_surface)
+        try:
+            self.iconname("壁历")
+        except Exception:
+            pass
+
+        ensure_icon()
+
+        self.selected = date.today()
+        self.view_year = self.selected.year
+        self.view_month = self.selected.month
+        self.editing_id: str | None = None
+        self.tray = None
+        self._refreshing = False
+        self._day_buttons: dict[date, ctk.CTkButton] = {}
+        self._want_show = False
+        self._want_new_day = False
+        self._pending_wallpaper = None
+        self._pending_status: str | None = None
+
+        self._build()
+        self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        self.after(80, self.show_window)
+        self.after(200, self._pump_flags)
+        self.after(400, lambda: self.title_entry.focus_set())
+
+    def _build(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        self._build_top()
+        self._build_calendar_panel()
+        self._build_memo_panel()
+        self._build_status()
+        self.redraw()
+
+    def _build_top(self) -> None:
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=18, pady=(16, 8))
+        bar.grid_columnconfigure(1, weight=1)
+
+        title = ctk.CTkLabel(
+            bar,
+            text="壁历",
+            font=ctk.CTkFont(family="Microsoft YaHei", size=28, weight="bold"),
+            text_color=self.theme.ui_text,
+        )
+        title.grid(row=0, column=0, sticky="w")
+        subtitle = ctk.CTkLabel(
+            bar,
+            text=f"  v{__version__}  ·  选一天，写下安排。整月日程铺在桌面上。",
+            font=ctk.CTkFont(family="Microsoft YaHei", size=13),
+            text_color=self.theme.ui_muted,
+        )
+        subtitle.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self._title_label = title
+        self._subtitle_label = subtitle
+
+        theme_labels = [item.label for item in THEMES.values()]
+        current_label = self.theme.label
+        self.theme_menu = ctk.CTkOptionMenu(
+            bar,
+            values=theme_labels,
+            width=88,
+            command=self._on_theme,
+            fg_color=self.theme.ui_accent,
+            button_color=self.theme.ui_hover,
+            button_hover_color=self.theme.ui_hover,
+            text_color=self._on_accent_hex(),
+            dropdown_fg_color=self.theme.ui_card,
+            dropdown_text_color=self.theme.ui_text,
+        )
+        self.theme_menu.set(current_label)
+        self.theme_menu.grid(row=0, column=2, padx=8)
+
+        self.autostart_var = ctk.BooleanVar(value=bool(self.store["settings"].get("autostart")))
+        self.autostart_switch = ctk.CTkSwitch(
+            bar,
+            text="开机启动",
+            variable=self.autostart_var,
+            command=self._on_autostart,
+            progress_color=self.theme.ui_accent,
+        )
+        self.autostart_switch.grid(row=0, column=3, padx=8)
+
+        refresh_btn = ctk.CTkButton(
+            bar,
+            text="刷新壁纸",
+            width=96,
+            fg_color=self.theme.ui_accent,
+            hover_color=self.theme.ui_hover,
+            text_color=self._on_accent_hex(),
+            command=lambda: self.refresh_wallpaper_async("正在刷新壁纸…"),
+        )
+        refresh_btn.grid(row=0, column=4, padx=8)
+        self.quit_btn = ctk.CTkButton(
+            bar,
+            text="退出",
+            width=64,
+            fg_color="transparent",
+            border_width=1,
+            border_color=self.theme.ui_border,
+            text_color=self.theme.ui_muted,
+            hover_color=self.theme.ui_card,
+            command=self.quit_app,
+        )
+        self.quit_btn.grid(row=0, column=5, padx=(0, 0))
+
+    def _build_calendar_panel(self) -> None:
+        panel = ctk.CTkFrame(
+            self,
+            corner_radius=22,
+            fg_color=self.theme.ui_card,
+            border_width=1,
+            border_color=self.theme.ui_border,
+        )
+        panel.grid(row=1, column=0, sticky="nsew", padx=(20, 8), pady=10)
+        self.cal_panel = panel
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(2, weight=1)
+
+        nav = ctk.CTkFrame(panel, fg_color="transparent")
+        nav.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 4))
+        nav.grid_columnconfigure(1, weight=1)
+
+        nav_style = {
+            "width": 40,
+            "fg_color": "transparent",
+            "border_width": 1,
+            "border_color": self.theme.ui_border,
+            "text_color": self.theme.ui_text,
+            "hover_color": self.theme.ui_input,
+        }
+        ctk.CTkButton(nav, text="‹", command=lambda: self._shift_month(-1), **nav_style).grid(row=0, column=0)
+        self.month_label = ctk.CTkLabel(
+            nav,
+            text="",
+            font=ctk.CTkFont(family="Microsoft YaHei", size=20, weight="bold"),
+            text_color=self.theme.ui_text,
+        )
+        self.month_label.grid(row=0, column=1)
+        ctk.CTkButton(nav, text="›", command=lambda: self._shift_month(1), **nav_style).grid(row=0, column=2)
+        ctk.CTkButton(
+            nav,
+            text="今天",
+            width=64,
+            fg_color=self.theme.ui_accent,
+            hover_color=self.theme.ui_hover,
+            text_color=self._on_accent_hex(),
+            command=self._goto_today,
+        ).grid(row=0, column=3, padx=(8, 0))
+
+        head = ctk.CTkFrame(panel, fg_color="transparent")
+        head.grid(row=1, column=0, sticky="ew", padx=16, pady=(8, 0))
+        for i, name in enumerate(WEEK_HEADER):
+            head.grid_columnconfigure(i, weight=1)
+            color = self.theme.ui_accent if i in (0, 6) else self.theme.ui_muted
+            ctk.CTkLabel(
+                head,
+                text=name,
+                text_color=color,
+                font=ctk.CTkFont(family="Microsoft YaHei", size=13, weight="bold"),
+            ).grid(row=0, column=i, pady=4)
+
+        self.cal_grid = ctk.CTkFrame(panel, fg_color="transparent")
+        self.cal_grid.grid(row=2, column=0, sticky="nsew", padx=12, pady=(4, 16))
+        for i in range(7):
+            self.cal_grid.grid_columnconfigure(i, weight=1)
+        for r in range(6):
+            self.cal_grid.grid_rowconfigure(r, weight=1)
+
+    def _build_memo_panel(self) -> None:
+        panel = ctk.CTkFrame(
+            self,
+            corner_radius=22,
+            fg_color=self.theme.ui_card,
+            border_width=1,
+            border_color=self.theme.ui_border,
+        )
+        panel.grid(row=1, column=1, sticky="nsew", padx=(8, 20), pady=10)
+        self.memo_panel = panel
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(1, weight=1)
+
+        self.day_title = ctk.CTkLabel(
+            panel,
+            text="",
+            font=ctk.CTkFont(family="Microsoft YaHei", size=22, weight="bold"),
+            text_color=self.theme.ui_text,
+            anchor="w",
+        )
+        self.day_title.grid(row=0, column=0, sticky="ew", padx=18, pady=(16, 8))
+
+        self.memo_list = ctk.CTkScrollableFrame(panel, fg_color="transparent")
+        self.memo_list.grid(row=1, column=0, sticky="nsew", padx=10, pady=4)
+
+        form = ctk.CTkFrame(panel, fg_color="transparent")
+        form.grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 16))
+        form.grid_columnconfigure(0, weight=1)
+
+        hint = ctk.CTkLabel(
+            form,
+            text="写在下面，会出现在桌面日历对应的那一格。",
+            anchor="w",
+            font=ctk.CTkFont(family="Microsoft YaHei", size=13),
+            text_color=self.theme.ui_muted,
+        )
+        hint.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 6))
+
+        self.title_entry = ctk.CTkEntry(
+            form,
+            placeholder_text="例如：下午三点开会",
+            height=46,
+            font=ctk.CTkFont(family="Microsoft YaHei", size=15),
+            fg_color=self.theme.ui_input,
+            border_color=self.theme.ui_border,
+            text_color=self.theme.ui_text,
+            placeholder_text_color=self.theme.ui_muted,
+        )
+        self.title_entry.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+        self.title_entry.bind("<Return>", lambda _e: self._submit_memo())
+
+        self.time_entry = ctk.CTkEntry(
+            form,
+            placeholder_text="时间 09:30",
+            width=110,
+            fg_color=self.theme.ui_input,
+            border_color=self.theme.ui_border,
+            text_color=self.theme.ui_text,
+            placeholder_text_color=self.theme.ui_muted,
+        )
+        self.time_entry.grid(row=2, column=0, sticky="w", padx=(0, 8))
+
+        self.tag_menu = ctk.CTkOptionMenu(form, values=list(TAG_KEYS.values()), width=90)
+        self.tag_menu.set("生活")
+        self.tag_menu.grid(row=2, column=1, padx=4)
+
+        self.repeat_menu = ctk.CTkOptionMenu(form, values=list(REPEAT_KEYS.values()), width=90)
+        self.repeat_menu.set("仅一次")
+        self.repeat_menu.grid(row=2, column=2, padx=4)
+
+        self.submit_btn = ctk.CTkButton(
+            form,
+            text="添加备忘",
+            width=110,
+            height=36,
+            fg_color=self.theme.ui_accent,
+            hover_color=self.theme.ui_hover,
+            text_color=self._on_accent_hex(),
+            command=self._submit_memo,
+        )
+        self.submit_btn.grid(row=2, column=3, padx=(8, 0))
+
+        self.cancel_edit_btn = ctk.CTkButton(
+            form,
+            text="取消编辑",
+            width=90,
+            fg_color="transparent",
+            border_width=1,
+            command=self._cancel_edit,
+        )
+        self.cancel_edit_btn.grid(row=3, column=3, sticky="e", pady=(8, 0))
+        self.cancel_edit_btn.grid_remove()
+
+    def _build_status(self) -> None:
+        self.status = ctk.CTkLabel(
+            self,
+            text="护眼纸色界面。点左边选日子，右边写安排，桌面整月日历会跟着刷新。",
+            font=ctk.CTkFont(family="Microsoft YaHei", size=12),
+            text_color=self.theme.ui_muted,
+            anchor="w",
+        )
+        self.status.grid(row=2, column=0, columnspan=2, sticky="ew", padx=22, pady=(0, 12))
+
+    def _on_accent_hex(self) -> str:
+        r, g, b = self.theme.on_accent
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def redraw(self) -> None:
+        self._redraw_calendar()
+        self._redraw_memos()
+
+    def _redraw_calendar(self) -> None:
+        self.month_label.configure(text=f"{self.view_year} 年 {MONTHS[self.view_month - 1]}")
+        for child in self.cal_grid.winfo_children():
+            child.destroy()
+        self._day_buttons.clear()
+
+        weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(self.view_year, self.view_month)
+        today = date.today()
+        for r, week in enumerate(weeks):
+            for c, day in enumerate(week):
+                in_month = day.month == self.view_month
+                items = pending_on(self.store["memos"], day) if in_month else []
+                is_today = day == today
+                is_selected = day == self.selected
+                label = str(day.day)
+                if items:
+                    label = f"{day.day}  ·{len(items)}"
+
+                fg = "transparent"
+                hover = self.theme.ui_input
+                text_color = self.theme.ui_text if in_month else self.theme.ui_muted
+                border = 0
+                border_color = self.theme.ui_border
+
+                if not in_month:
+                    text_color = self.theme.ui_muted
+                elif is_today:
+                    fg = self.theme.ui_accent
+                    text_color = self._on_accent_hex()
+                    hover = self.theme.ui_hover
+                elif is_selected:
+                    fg = self.theme.ui_input
+                    border = 2
+                    border_color = self.theme.ui_accent
+                elif items:
+                    fg = self.theme.ui_input
+                    text_color = self.theme.ui_accent
+
+                btn = ctk.CTkButton(
+                    self.cal_grid,
+                    text=label,
+                    width=46,
+                    height=44,
+                    corner_radius=12,
+                    fg_color=fg,
+                    hover_color=hover,
+                    text_color=text_color,
+                    border_width=border,
+                    border_color=border_color,
+                    font=ctk.CTkFont(family="Microsoft YaHei", size=14, weight="bold" if is_today or is_selected else "normal"),
+                    command=lambda d=day: self._select_day(d),
+                )
+                btn.grid(row=r, column=c, padx=4, pady=4, sticky="nsew")
+                self._day_buttons[day] = btn
+
+    def _redraw_memos(self) -> None:
+        weekday = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][
+            self.selected.weekday()
+        ]
+        flag = "（今天）" if self.selected == date.today() else ""
+        items = memos_on(self.store["memos"], self.selected)
+        pending = pending_on(self.store["memos"], self.selected)
+        self.day_title.configure(
+            text=f"{self.selected.month}月{self.selected.day}日  {weekday} {flag}    {len(pending)} 件待办"
+        )
+
+        for child in self.memo_list.winfo_children():
+            child.destroy()
+
+        if not items:
+            empty = ctk.CTkLabel(
+                self.memo_list,
+                text="这一天还空着。\n写一件小事，就会出现在桌面日历格里。",
+                justify="left",
+                font=ctk.CTkFont(family="Microsoft YaHei", size=14),
+                text_color=self.theme.ui_muted,
+            )
+            empty.pack(anchor="w", padx=8, pady=18)
+            return
+
+        for memo in items:
+            self._memo_row(memo)
+
+    def _memo_row(self, memo: dict[str, Any]) -> None:
+        done = is_done(memo, self.selected)
+        row = ctk.CTkFrame(
+            self.memo_list,
+            corner_radius=14,
+            fg_color=self.theme.ui_input,
+            border_width=1,
+            border_color=self.theme.ui_border,
+        )
+        row.pack(fill="x", padx=6, pady=6)
+        row.grid_columnconfigure(3, weight=1)
+
+        tag_key = memo.get("tag") or "life"
+        tag_label = TAG_KEYS.get(tag_key, "生活")
+        color = tag_hex(self.theme, tag_key)
+        bar = ctk.CTkFrame(row, width=5, corner_radius=3, fg_color=color)
+        bar.grid(row=0, column=0, sticky="ns", padx=(8, 6), pady=10)
+        tag = ctk.CTkLabel(
+            row,
+            text=tag_label,
+            width=44,
+            text_color=color,
+            font=ctk.CTkFont(family="Microsoft YaHei", size=12, weight="bold"),
+        )
+        tag.grid(row=0, column=1, padx=(2, 4), pady=10)
+
+        time_text = memo.get("time") or "全天"
+        ctk.CTkLabel(
+            row,
+            text=time_text,
+            width=52,
+            font=ctk.CTkFont(family="Microsoft YaHei", size=13),
+            text_color=self.theme.ui_muted,
+        ).grid(row=0, column=2, padx=4)
+
+        title_color = self.theme.ui_muted if done else self.theme.ui_text
+        title = memo.get("title") or ""
+        if done:
+            title = f"✓  {title}"
+        repeat = REPEAT_KEYS.get(memo.get("repeat") or "none", "仅一次")
+        extra = "" if repeat == "仅一次" else f"  · {repeat}"
+        ctk.CTkLabel(
+            row,
+            text=title + extra,
+            anchor="w",
+            font=ctk.CTkFont(family="Microsoft YaHei", size=14, weight="bold"),
+            text_color=title_color,
+        ).grid(row=0, column=3, sticky="ew", padx=6)
+
+        quiet = {
+            "width": 54,
+            "fg_color": "transparent",
+            "border_width": 1,
+            "border_color": self.theme.ui_border,
+            "text_color": self.theme.ui_muted,
+            "hover_color": self.theme.ui_card,
+        }
+        ctk.CTkButton(
+            row,
+            text="未做" if done else "完成",
+            command=lambda m=memo: self._toggle_done(m),
+            **quiet,
+        ).grid(row=0, column=4, padx=3)
+        ctk.CTkButton(
+            row,
+            text="编辑",
+            command=lambda m=memo: self._start_edit(m),
+            **quiet,
+        ).grid(row=0, column=5, padx=3)
+        ctk.CTkButton(
+            row,
+            text="删除",
+            width=54,
+            fg_color="transparent",
+            border_width=1,
+            border_color=self.theme.ui_border,
+            text_color="#A56A60",
+            hover_color=self.theme.ui_card,
+            command=lambda m=memo: self._delete_memo(m),
+        ).grid(row=0, column=6, padx=(3, 10))
+
+    def _select_day(self, day: date) -> None:
+        self.selected = day
+        self.view_year = day.year
+        self.view_month = day.month
+        self._cancel_edit()
+        self.redraw()
+
+    def _shift_month(self, delta: int) -> None:
+        month = self.view_month + delta
+        year = self.view_year
+        while month < 1:
+            month += 12
+            year -= 1
+        while month > 12:
+            month -= 12
+            year += 1
+        self.view_year, self.view_month = year, month
+        self._redraw_calendar()
+
+    def _goto_today(self) -> None:
+        self._select_day(date.today())
+
+    def _submit_memo(self) -> None:
+        title = self.title_entry.get().strip()
+        if not title:
+            self._set_status("先写一下要做的事")
+            return
+        time_value = parse_time(self.time_entry.get())
+        if time_value is None:
+            messagebox.showwarning("时间格式", "时间请写成 09:30 这样，也可以留空。")
+            return
+        tag = TAG_FROM_LABEL.get(self.tag_menu.get(), "life")
+        repeat = REPEAT_FROM_LABEL.get(self.repeat_menu.get(), "none")
+
+        if self.editing_id:
+            memo = next((m for m in self.store["memos"] if m["id"] == self.editing_id), None)
+            if memo:
+                memo["title"] = title
+                memo["time"] = time_value
+                memo["tag"] = tag
+                memo["repeat"] = repeat
+                memo["date"] = self.selected.isoformat()
+            self.editing_id = None
+            self.submit_btn.configure(text="添加备忘")
+            self.cancel_edit_btn.grid_remove()
+            self._set_status("备忘已更新，壁纸即将刷新")
+        else:
+            self.store["memos"].append(
+                new_memo(
+                    title=title,
+                    day=self.selected,
+                    time=time_value,
+                    tag=tag,
+                    repeat=repeat,
+                )
+            )
+            self._set_status("已写上，桌面壁纸马上会看到这件事")
+
+        self.title_entry.delete(0, "end")
+        self.time_entry.delete(0, "end")
+        save(self.store)
+        self.redraw()
+        self.refresh_wallpaper_async()
+
+    def _start_edit(self, memo: dict[str, Any]) -> None:
+        self.editing_id = memo["id"]
+        self.title_entry.delete(0, "end")
+        self.title_entry.insert(0, memo.get("title") or "")
+        self.time_entry.delete(0, "end")
+        self.time_entry.insert(0, memo.get("time") or "")
+        self.tag_menu.set(TAG_KEYS.get(memo.get("tag") or "life", "生活"))
+        self.repeat_menu.set(REPEAT_KEYS.get(memo.get("repeat") or "none", "仅一次"))
+        self.submit_btn.configure(text="保存修改")
+        self.cancel_edit_btn.grid()
+
+    def _cancel_edit(self) -> None:
+        self.editing_id = None
+        self.submit_btn.configure(text="添加备忘")
+        self.cancel_edit_btn.grid_remove()
+        self.title_entry.delete(0, "end")
+        self.time_entry.delete(0, "end")
+
+    def _toggle_done(self, memo: dict[str, Any]) -> None:
+        toggle_done(memo, self.selected)
+        save(self.store)
+        self.redraw()
+        self.refresh_wallpaper_async("状态已更新，壁纸刷新中")
+
+    def _delete_memo(self, memo: dict[str, Any]) -> None:
+        if not messagebox.askyesno("删除备忘", f"删除「{memo.get('title')}」？"):
+            return
+        self.store["memos"] = [m for m in self.store["memos"] if m["id"] != memo["id"]]
+        if self.editing_id == memo["id"]:
+            self._cancel_edit()
+        save(self.store)
+        self.redraw()
+        self.refresh_wallpaper_async("已删除，壁纸刷新中")
+
+    def _on_theme(self, label: str) -> None:
+        key = next((k for k, t in THEMES.items() if t.label == label), "eye")
+        self.store["settings"]["theme"] = key
+        self.theme = get_theme(key)
+        save(self.store)
+        ctk.set_appearance_mode(self.theme.ui_mode)
+        self._apply_chrome()
+        self.redraw()
+        self.refresh_wallpaper_async("正在切换壁纸主题…")
+
+    def _apply_chrome(self) -> None:
+        self.configure(fg_color=self.theme.ui_surface)
+        for panel in (getattr(self, "cal_panel", None), getattr(self, "memo_panel", None)):
+            if panel is not None:
+                panel.configure(fg_color=self.theme.ui_card, border_color=self.theme.ui_border)
+        if hasattr(self, "_title_label"):
+            self._title_label.configure(text_color=self.theme.ui_text)
+        if hasattr(self, "_subtitle_label"):
+            self._subtitle_label.configure(text_color=self.theme.ui_muted)
+        self.theme_menu.configure(
+            fg_color=self.theme.ui_accent,
+            button_color=self.theme.ui_hover,
+            button_hover_color=self.theme.ui_hover,
+            text_color=self._on_accent_hex(),
+            dropdown_fg_color=self.theme.ui_card,
+            dropdown_text_color=self.theme.ui_text,
+        )
+        self.submit_btn.configure(
+            fg_color=self.theme.ui_accent,
+            hover_color=self.theme.ui_hover,
+            text_color=self._on_accent_hex(),
+        )
+        if hasattr(self, "quit_btn"):
+            self.quit_btn.configure(
+                border_color=self.theme.ui_border,
+                text_color=self.theme.ui_muted,
+                hover_color=self.theme.ui_card,
+            )
+        self.day_title.configure(text_color=self.theme.ui_text)
+        self.month_label.configure(text_color=self.theme.ui_text)
+        self.status.configure(text_color=self.theme.ui_muted)
+        self.title_entry.configure(
+            fg_color=self.theme.ui_input,
+            border_color=self.theme.ui_border,
+            text_color=self.theme.ui_text,
+            placeholder_text_color=self.theme.ui_muted,
+        )
+
+    def _on_autostart(self) -> None:
+        enabled = bool(self.autostart_var.get())
+        try:
+            autostart.set_enabled(enabled)
+            self.store["settings"]["autostart"] = enabled
+            save(self.store)
+            self._set_status("开机启动已打开" if enabled else "开机启动已关闭")
+        except OSError as exc:
+            self.autostart_var.set(not enabled)
+            messagebox.showerror("开机启动", str(exc))
+
+    def _set_status(self, text: str) -> None:
+        self.status.configure(text=text)
+
+    def request_show(self) -> None:
+        self._want_show = True
+
+    def request_new_day(self) -> None:
+        self._want_new_day = True
+
+    def _pump_flags(self) -> None:
+        try:
+            if self._want_show:
+                self._want_show = False
+                self.show_window()
+            if self._want_new_day:
+                self._want_new_day = False
+                self.on_new_day()
+            if self._pending_status is not None:
+                text = self._pending_status
+                self._pending_status = None
+                self._set_status(text)
+            if self._pending_wallpaper is not None:
+                path = self._pending_wallpaper
+                self._pending_wallpaper = None
+                self._apply_rendered_wallpaper(path)
+        except Exception:
+            pass
+        self.after(150, self._pump_flags)
+
+    def refresh_wallpaper_async(self, message: str | None = None) -> None:
+        if message:
+            self._set_status(message)
+        snapshot = deepcopy(self.store)
+
+        def job() -> None:
+            try:
+                path = render_wallpaper(snapshot, apply=False)
+                self._pending_wallpaper = path
+            except Exception as exc:
+                self._pending_status = f"壁纸更新失败：{exc}"
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _apply_rendered_wallpaper(self, path) -> None:
+        try:
+            from .winwallpaper import set_wallpaper
+
+            set_wallpaper(path)
+            self._set_status("桌面壁纸已更新。日子过了会自动换上新一天的日程。")
+        except Exception as exc:
+            self._set_status(f"壁纸更新失败：{exc}")
+
+    def on_new_day(self) -> None:
+        today = date.today()
+        self.selected = today
+        self.view_year = today.year
+        self.view_month = today.month
+        self.redraw()
+        self.refresh_wallpaper_async("新的一天到了，正在换上今日壁纸…")
+
+    def hide_to_tray(self) -> None:
+        self.iconify()
+        self._set_status("已缩到任务栏。再点任务栏上的「壁历」就能继续写备忘。")
+
+    def show_window(self) -> None:
+        try:
+            self.deiconify()
+            self.geometry("1080x720+60+40")
+            self.lift()
+            self.focus_force()
+            self.attributes("-topmost", True)
+            self.update_idletasks()
+            self.after(800, lambda: self.attributes("-topmost", False))
+            self.after(200, lambda: self.title_entry.focus_set())
+        except Exception:
+            pass
+
+    def quit_app(self) -> None:
+        if self.tray is not None:
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
+        self.destroy()
