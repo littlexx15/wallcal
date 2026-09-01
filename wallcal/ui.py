@@ -377,7 +377,7 @@ class WallCalWindow(ctk.CTk):
         self.tag_menu.set("生活")
         self.tag_menu.grid(row=2, column=1, padx=4)
 
-        self.repeat_menu = ctk.CTkOptionMenu(form, values=list(REPEAT_KEYS.values()), width=90)
+        self.repeat_menu = ctk.CTkOptionMenu(form, values=list(REPEAT_KEYS.values()), width=96)
         self.repeat_menu.set("仅一次")
         self.repeat_menu.grid(row=2, column=2, padx=4)
 

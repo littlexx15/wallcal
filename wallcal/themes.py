@@ -157,6 +157,7 @@ REPEAT_KEYS = {
     "none": "仅一次",
     "daily": "每天",
     "weekly": "每周",
+    "monthly": "每月",
 }
 REPEAT_FROM_LABEL = {v: k for k, v in REPEAT_KEYS.items()}
 

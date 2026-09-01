@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 from datetime import date, timedelta
 from typing import Any
 
@@ -17,6 +18,10 @@ def occurs_on(memo: dict[str, Any], day: date) -> bool:
         return True
     if repeat == "weekly":
         return day.weekday() == start.weekday()
+    if repeat == "monthly":
+        last = calendar.monthrange(day.year, day.month)[1]
+        target = min(start.day, last)
+        return day.day == target
     return day == start
 
 
