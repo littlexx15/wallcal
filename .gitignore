@@ -14,7 +14,7 @@ dist/
 AppData/
 desktop.ini
 Thumbs.db
-assets/preview*.jpg
+assets/preview_tmp*.jpg
 run.log
 _out.txt
 _err.txt
