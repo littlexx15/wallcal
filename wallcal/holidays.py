@@ -97,20 +97,18 @@ def official_years() -> list[int]:
     return sorted(OFFICIAL)
 
 
-def mark_on(day: date, personal: Iterable[dict[str, Any]] | None = None) -> DayMark | None:
+def mark_on(day: date, personal: Iterable[dict[str, Any]] | None = None, *, include_official: bool = True) -> DayMark | None:
     key = day.isoformat()
-    pack = OFFICIAL.get(day.year)
+    for item in personal or []:
+        if str(item.get("date") or "")[:10] == key:
+            kind = str(item.get("kind") or "leave")
+            return DayMark(kind, str(item.get("name") or "休假"), False)
+    pack = OFFICIAL.get(day.year) if include_official else None
     if pack:
         if key in pack["off"]:
             return DayMark("off", pack["off"][key], True)
-    for item in personal or []:
-        if str(item.get("date") or "")[:10] != key:
-            continue
-        kind = str(item.get("kind") or "leave")
-        if kind == "work":
-            continue
-        name = str(item.get("name") or "年假")
-        return DayMark("leave", name, False)
+        if key in pack["work"]:
+            return DayMark("work", pack["work"][key], True)
     return None
 
 
@@ -129,7 +127,7 @@ def month_counts(
     while day < end:
         mark = mark_on(day, personal)
         if mark:
-            if mark.kind == "off":
+            if mark.kind in {"off", "rest"}:
                 off += 1
             elif mark.kind == "leave":
                 leave += 1
@@ -145,7 +143,7 @@ def next_rest_day(
     for offset in range(0, limit):
         day = today + timedelta(days=offset)
         mark = mark_on(day, personal)
-        if mark and mark.kind in {"off", "leave"}:
+        if mark and mark.kind in {"off", "leave", "rest"}:
             return day, mark
     return None
 

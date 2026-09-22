@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 
 
 def preview() -> None:
-    from wallcal.memos import new_memo
+    from wallcal.storage import new_memo
     from wallcal.storage import load
     from wallcal.wallpaper import render_wallpaper
     from wallcal.winwallpaper import enable_dpi_awareness, screen_size

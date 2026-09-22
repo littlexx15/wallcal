@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import sys
-import threading
 import time
 import traceback
-from datetime import date
 
 from . import ipc
 from .icon import ensure_icon
@@ -20,21 +18,6 @@ def _log(message: str) -> None:
             handle.write(time.strftime("%Y-%m-%d %H:%M:%S ") + message.rstrip() + "\n")
     except OSError:
         pass
-
-
-class DateWatcher(threading.Thread):
-    def __init__(self, window: WallCalWindow) -> None:
-        super().__init__(daemon=True, name="wallcal-date")
-        self.window = window
-        self.last = date.today()
-
-    def run(self) -> None:
-        while True:
-            time.sleep(20)
-            today = date.today()
-            if today != self.last:
-                self.last = today
-                self.window.request_new_day()
 
 
 def run() -> None:
@@ -53,7 +36,7 @@ def run() -> None:
 
     window.tray = None
     ipc.listen_for_show(window.request_show)
-    DateWatcher(window).start()
+
     window.after(150, window.show_window)
     _log("entering mainloop")
     window.mainloop()

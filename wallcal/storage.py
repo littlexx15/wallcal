@@ -18,6 +18,14 @@ DEFAULT_STATE: dict[str, Any] = {
         "autostart": False,
         "first_run": True,
         "show_holidays": True,
+        "wallpaper_enabled": True,
+        "layout": "auto",
+        "font_scale": 1.0,
+        "ui_scale": 1.0,
+        "high_contrast": True,
+        "background": "",
+        "background_visibility": 35,
+        "custom_themes": {},
     },
     "memos": [],
     "personal_holidays": [],
@@ -38,12 +46,16 @@ def load() -> dict[str, Any]:
             return state
         try:
             raw = json.loads(STORE_PATH.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            state = _blank()
-            _write(STORE_PATH, state)
-            return state
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"数据文件读取失败，原文件已保留：{STORE_PATH}") from exc
+        if not isinstance(raw, dict):
+            raise ValueError("数据文件必须是 JSON 对象，原文件已保留")
         state = _blank()
         state["settings"].update(raw.get("settings") or {})
+        if state["settings"].get("layout") in {"three_quarters", "four_fifths", "right", "compact"}:
+            state["settings"]["layout"] = "auto"
+        if state["settings"].get("theme") in {"paper", "celadon"}:
+            state["settings"]["theme"] = "eye"
         memos = raw.get("memos") or []
         state["memos"] = [_normalize_memo(m) for m in memos if isinstance(m, dict)]
         personal = raw.get("personal_holidays") or []

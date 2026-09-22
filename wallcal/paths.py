@@ -19,7 +19,8 @@ def resource_root() -> Path:
 
 
 def data_dir() -> Path:
-    root = Path(os.environ.get("APPDATA", install_dir())) / "WallCal"
+    override = os.environ.get("WALLCAL_DATA_DIR")
+    root = Path(override) if override else Path(os.environ.get("APPDATA", install_dir())) / "WallCal"
     root.mkdir(parents=True, exist_ok=True)
     return root
 

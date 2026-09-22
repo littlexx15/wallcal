@@ -178,3 +178,91 @@ def tag_color(theme: Theme, tag: str) -> tuple[int, int, int]:
 
 def tag_hex(theme: Theme, tag: str) -> str:
     return _hex(tag_color(theme, tag))
+
+
+def readable_theme(theme: Theme, enabled: bool = True) -> Theme:
+    if not enabled:
+        return theme
+    from dataclasses import replace
+    dark = theme.ui_mode == "dark"
+    return replace(theme,
+        muted=(198, 204, 200) if dark else (65, 74, 67),
+        faint=(178, 187, 182) if dark else (83, 93, 86),
+        ui_muted="#C6CCC8" if dark else "#414A43")
+
+
+def _rgb(value: str) -> tuple[int, int, int]:
+    if not isinstance(value, str) or len(value) != 7 or not value.startswith("#"):
+        raise ValueError("颜色应为 #RRGGBB 格式")
+    return tuple(int(value[i:i+2], 16) for i in (1,3,5))
+
+
+def _blend(a, b, amount):
+    return tuple(round(x*(1-amount)+y*amount) for x,y in zip(a,b))
+
+
+def contrast_ratio(a, b):
+    def lum(color):
+        channels = [v/255 for v in color]
+        linear = [v/12.92 if v <= .04045 else ((v+.055)/1.055)**2.4 for v in channels]
+        return sum(v*w for v,w in zip(linear,(.2126,.7152,.0722)))
+    x,y = sorted((lum(a),lum(b)))
+    return (y+.05)/(x+.05)
+
+
+def image_palette(path):
+    import colorsys
+    from PIL import Image, ImageOps
+    with Image.open(path) as image:
+        sample = ImageOps.exif_transpose(image).convert("RGB")
+        sample.thumbnail((160,160))
+        reduced = sample.quantize(colors=12).convert("RGB")
+        colors = sorted(reduced.getcolors(256) or [], reverse=True)
+    if not colors:
+        raise ValueError("无法从图片提取颜色")
+    dominant = colors[0][1]
+    def score(item):
+        count, color = item
+        _, light, saturation = colorsys.rgb_to_hls(*(v/255 for v in color))
+        return count**.4*(saturation+.15)*(1-abs(light-.5))
+    accent = max(colors, key=score)[1]
+    return {"surface": _hex(dominant), "accent": _hex(accent)}
+
+
+def theme_choices(settings):
+    choices = {THEMES[key].label: key for key in ("eye", "ink")}
+    for key, profile in settings.get("custom_themes", {}).items():
+        choices[f"图片 · {profile.get('name', '自定义')}"] = key
+    return choices
+
+
+def theme_from_settings(settings):
+    key = settings.get("theme", "eye")
+    profile = settings.get("custom_themes", {}).get(key)
+    if profile is None:
+        return readable_theme(get_theme(key), settings.get("high_contrast", True))
+    from dataclasses import replace
+    import colorsys
+    dark = profile.get("mode") == "dark"
+    seed = _rgb(profile.get("surface", "#789080"))
+    accent = _rgb(profile.get("accent", "#5A8062"))
+    h,l,sat = colorsys.rgb_to_hls(*(v/255 for v in seed))
+    base = tuple(round(v*255) for v in colorsys.hls_to_rgb(h, .10 if dark else .94, min(sat,.20)))
+    card = _blend(base, (255,255,255), .07 if dark else .65)
+    text = (235,240,237) if dark else (30,39,34)
+    muted = _blend(text,card,.25)
+    # Derive a usable accent even from pale or near-black source images.
+    target = (235,245,240) if dark else (16,37,27)
+    for _ in range(30):
+        if contrast_ratio(accent,card) >= 4.5: break
+        accent = _blend(accent,target,.12)
+    on_accent = (255,255,255) if contrast_ratio(accent,(255,255,255)) >= contrast_ratio(accent,(15,20,17)) else (15,20,17)
+    border = _blend(base,text,.18)
+    source = THEMES["ink" if dark else "eye"]
+    return replace(source,key=key,label=f"图片 · {profile.get('name','自定义')}", ui_mode="dark" if dark else "light",
+        bg0=base,bg1=_blend(base,accent,.12),card=(*card,250),card_line=(*border,160),
+        text=text,muted=muted,faint=_blend(text,card,.34),other_month=_blend(text,card,.5),
+        accent=accent,on_accent=on_accent,life=accent,
+        ui_accent=_hex(accent),ui_hover=_hex(_blend(accent,on_accent,.12)),
+        ui_surface=_hex(base),ui_card=_hex(card),ui_text=_hex(text),ui_muted=_hex(muted),
+        ui_border=_hex(border),ui_input=_hex(_blend(card,(255,255,255),.04 if dark else .5)))

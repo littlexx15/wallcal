@@ -132,7 +132,7 @@ def payload_from_state(state: dict[str, Any]) -> dict[str, Any]:
     settings = dict(state.get("settings") or {})
     settings.pop("autostart", None)
     settings.pop("first_run", None)
-    return {
+    payload = {
         "app": "wallcal",
         "updated_at": now_stamp(),
         "settings": {
@@ -143,6 +143,10 @@ def payload_from_state(state: dict[str, Any]) -> dict[str, Any]:
         "personal_holidays": list(state.get("personal_holidays") or []),
         "deleted_ids": list(state.get("deleted_ids") or []),
     }
+
+    if str(settings.get("theme", "")).startswith("custom_"):
+        payload["settings"].pop("theme", None)
+    return payload
 
 
 def merge_state(local: dict[str, Any], remote: dict[str, Any]) -> dict[str, Any]:
@@ -181,7 +185,7 @@ def merge_state(local: dict[str, Any], remote: dict[str, Any]) -> dict[str, Any]
     local_settings = dict(local.get("settings") or {})
     remote_settings = dict(remote.get("settings") or {})
     if remote_stamp > local_stamp:
-        if "theme" in remote_settings:
+        if "theme" in remote_settings and not str(local_settings.get("theme", "")).startswith("custom_"):
             local_settings["theme"] = remote_settings["theme"]
         if "show_holidays" in remote_settings:
             local_settings["show_holidays"] = remote_settings["show_holidays"]

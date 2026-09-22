@@ -5,13 +5,13 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 from .fonts import font
 from .holidays import mark_on, month_counts, next_rest_day
 from .memos import daily_habits, events_on, is_done, month_stats, pending_on
 from .paths import DATA_DIR, WALLPAPER_PATH
-from .themes import Theme, get_theme, tag_color
+from .themes import Theme, get_theme, tag_color, readable_theme, theme_from_settings
 from .winwallpaper import screen_size, set_wallpaper
 
 WEEK_HEADER = ["日", "一", "二", "三", "四", "五", "六"]
@@ -37,6 +37,9 @@ class Scale:
         self.w = width
         self.h = height
         self.k = min(width / 1920.0, height / 1080.0)
+
+    def text(self, value: float) -> int:
+        return max(11, round(value * self.k * getattr(self, "font_scale", 1.0)))
 
     def __call__(self, value: float) -> int:
         return int(round(value * self.k))
@@ -73,6 +76,28 @@ def ellipsize(draw: ImageDraw.ImageDraw, text: str, fnt, max_width: int) -> str:
         else:
             hi = mid - 1
     return (text[:lo] + ell) if lo else ell
+
+
+def wrap_text(draw, text, fnt, width, limit=2):
+    """Fit complete lines, with an explicit ellipsis only on the last line."""
+    text = " ".join(text.split())
+    lines = []
+    while text and len(lines) < limit:
+        if len(lines) == limit - 1:
+            lines.append(ellipsize(draw, text, fnt, width))
+            break
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if draw.textlength(text[:mid], font=fnt) <= width:
+                lo = mid
+            else:
+                hi = mid - 1
+        if not lo:
+            break
+        lines.append(text[:lo])
+        text = text[lo:].lstrip()
+    return lines
 
 
 def put_text(
@@ -134,33 +159,60 @@ def with_alpha(color: tuple[int, int, int], alpha: int) -> tuple[int, int, int, 
     return (color[0], color[1], color[2], alpha)
 
 
-def render_wallpaper(
+def render_wallpaper_image(
     state: dict[str, Any],
     *,
     now: datetime | None = None,
     size: tuple[int, int] | None = None,
-    dest: Path | None = None,
-    apply: bool = False,
-) -> Path:
+) -> Image.Image:
     now = now or datetime.now()
     today = now.date()
-    theme = get_theme(state.get("settings", {}).get("theme", "eye"))
+    settings = state.get("settings", {})
+    theme = theme_from_settings(settings)
     memos = state.get("memos") or []
     show_holidays = bool(state.get("settings", {}).get("show_holidays", True))
     personal = state.get("personal_holidays") or []
     width, height = size or screen_size()
     s = Scale(width, height)
+    s.font_scale = float(settings.get("font_scale", 1.0))
 
     img = gradient_bg((width, height), theme.bg0, theme.bg1).convert("RGBA")
     img = apply_vignette(img)
 
-    margin = s(48)
-    top = s(36)
-    bottom = height - s(40)
+    background = settings.get("background")
+    s.picture_background = bool(background)
+    if background:
+        with Image.open(background) as source:
+            img = ImageOps.fit(ImageOps.exif_transpose(source).convert("RGB"), (width, height)).convert("RGBA")
+
+    margin = max(12, s(30))
+    top = margin
+    bottom = height - max(64, s(80))
     left = margin
     right = width - margin
-
-    header_h = s(88)
+    if size is None:
+        from .winwallpaper import work_area
+        wx0, wy0, wx1, wy1 = work_area()
+        left = max(left, wx0 + margin)
+        top = max(top, wy0 + margin)
+        right = min(right, wx1 - margin)
+        bottom = min(bottom, wy1 - margin)
+    available = right - left
+    layout = settings.get("layout", "right")
+    if layout == "auto":
+        from .desktop_layout import icon_rectangles, free_rectangle
+        icons = settings.get("_icon_rectangles")
+        if icons is None:
+            icons = icon_rectangles() if size is None else []
+        left, top, right, bottom = free_rectangle((left,top,right,bottom), icons,
+            padding=max(12,s(18)), minimum=(max(440,s(650)),max(300,s(480))))
+    elif layout != "full":
+        left = right - int(available * {"compact": 0.58, "four_fifths": 0.8}.get(layout, 0.67))
+    visibility = max(0, min(60, float(settings.get("background_visibility", 35))))
+    panel = (*theme.card[:3], round(255 * (1 - visibility / 100))) if background else theme.card
+    header = (*theme.card[:3], round(255 * min(1, 1.15 - visibility / 100))) if background else theme.card
+    header_h = max(s(116), s.text(20) * 4 + s(16))
+    img = rounded_card(img, (left, top, right, top + header_h), s(18), header, theme.card_line)
     _draw_header(
         img,
         theme,
@@ -168,29 +220,30 @@ def render_wallpaper(
         now,
         today,
         memos,
-        (left, top, right, top + header_h),
+        (left + s(20), top + s(10), right - s(20), top + header_h),
         show_holidays,
         personal,
     )
 
     cal_box = (left, top + header_h + s(12), right, bottom)
-    img = rounded_card(img, cal_box, s(24), theme.card, theme.card_line, max(s(1), 1))
+    img = rounded_card(img, cal_box, s(24), panel, theme.card_line, max(s(1), 1))
     _draw_month_grid(img, theme, s, memos, today, cal_box, show_holidays, personal)
 
-    draw = ImageDraw.Draw(img)
-    put_text(
-        draw,
-        (width / 2, height - s(20)),
-        "壁历  ·  休 法定放假    年 年假    写备忘会马上刷新到桌面",
-        font(s(15)),
-        theme.muted,
-        anchor="mm",
-    )
 
-    rgb = img.convert("RGB")
+    return img.convert("RGB")
+
+
+def render_wallpaper(
+    state: dict[str, Any], *, now: datetime | None = None,
+    size: tuple[int, int] | None = None, dest: Path | None = None,
+    apply: bool = False,
+) -> Path:
+    rgb = render_wallpaper_image(state, now=now, size=size)
     out = dest or _next_desktop_path()
     out.parent.mkdir(parents=True, exist_ok=True)
-    rgb.save(out, "JPEG", quality=95, optimize=True)
+    temporary = out.with_suffix(".tmp")
+    rgb.save(temporary, "JPEG", quality=95, optimize=True)
+    temporary.replace(out)
     try:
         rgb.save(WALLPAPER_PATH, "JPEG", quality=95, optimize=True)
     except OSError:
@@ -201,19 +254,8 @@ def render_wallpaper(
 
 
 def _next_desktop_path() -> Path:
-    import winreg
-
-    first = DATA_DIR / "desktop_a.jpg"
-    second = DATA_DIR / "desktop_b.jpg"
-    current = ""
-    try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop")
-        current, _ = winreg.QueryValueEx(key, "WallPaper")
-        winreg.CloseKey(key)
-    except OSError:
-        current = ""
-    marker = current.lower().replace("\\", "/")
-    return second if "desktop_a.jpg" in marker else first
+    import uuid
+    return DATA_DIR / f"desktop_{uuid.uuid4().hex}.jpg"
 
 
 def _draw_header(
@@ -229,52 +271,16 @@ def _draw_header(
 ) -> None:
     draw = ImageDraw.Draw(img)
     x0, y0, x1, y1 = box
-    hi = f"{greeting(now)}  ·  {WEEKDAYS[today.weekday()]}"
-    put_text(draw, (x0, y0 + s(2)), hi, font(s(18)), theme.muted)
-    put_text(
-        draw,
-        (x0, y0 + s(28)),
-        f"{today.year} 年 {MONTHS[today.month - 1]}",
-        font(s(34), bold=True),
-        theme.text,
-    )
-
+    width = x1 - x0
+    title = f"{today.year} 年 {today.month} 月   ·   今天 {today.day} 日  {WEEKDAYS[today.weekday()]}"
+    put_text(draw, (x0, y0), ellipsize(draw, title, font(s.text(26), bold=True), width), font(s.text(26), bold=True), theme.text)
     pending, done = month_stats(memos, today.year, today.month)
-    today_n = len(pending_on(memos, today))
-    stats = f"今天 {today.day} 日 · {today_n} 件     本月待办 {pending}     已完成 {done}"
-    put_text(draw, (x1, y0 + s(6)), stats, font(s(18)), theme.accent, anchor="rt")
-
-    extras: list[str] = []
-    if show_holidays:
-        off, leave = month_counts(today.year, today.month, personal)
-        bits = []
-        if off:
-            bits.append(f"放假 {off} 天")
-        if leave:
-            bits.append(f"年假 {leave} 天")
-        if bits:
-            extras.append("本月  " + "  ·  ".join(bits))
-        today_mark = mark_on(today, personal)
-        if today_mark and today_mark.kind != "work":
-            extras.append(today_mark.name)
-        elif not bits:
-            nxt = next_rest_day(today, personal)
-            if nxt:
-                day, mark = nxt
-                extras.append(f"下次假期  {mark.name}  {day.month}/{day.day}")
-    habits = daily_habits(memos, today)
-    if habits:
-        names = "、".join((m.get("title") or "") for m in habits[:4] if m.get("title"))
-        extras.append(f"每日  {names}")
-    if extras:
-        put_text(
-            draw,
-            (x1, y0 + s(40)),
-            "    ".join(extras[:2]),
-            font(s(15)),
-            theme.muted,
-            anchor="rt",
-        )
+    stats = f"今日待办 {len(pending_on(memos, today))} 件    本月待办 {pending} 件    已完成 {done} 件"
+    put_text(draw, (x0, y0 + s.text(34)), ellipsize(draw, stats, font(s.text(16)), width), font(s.text(16)), theme.accent)
+    marks = mark_on(today, personal, include_official=show_holidays)
+    hint = f"{marks.name}  ·  " if marks else ""
+    hint += "过去日期已淡化 · 打开壁历编辑事项"
+    put_text(draw, (x0, y0 + s.text(60)), ellipsize(draw, hint, font(s.text(13)), width), font(s.text(13)), theme.muted)
 
 
 def _draw_month_grid(
@@ -304,7 +310,7 @@ def _draw_month_grid(
     for i, name in enumerate(WEEK_HEADER):
         cx = x + cell_w * i + cell_w / 2
         color = theme.weekend if i in (0, 6) else theme.muted
-        put_text(draw, (cx, y + s(4)), name, font(s(18), bold=True), color, anchor="mt")
+        put_text(draw, (cx, y + s(4)), name, font(s.text(18), bold=True), color, anchor="mt")
 
     grid_top = y + header_h
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
@@ -345,41 +351,44 @@ def _draw_day_cell(
     is_today = day == today
     is_past = day < today
     weekend = day.weekday() >= 5
-    items = events_on(memos, day, skip_daily=True, include_done=True)
-    holiday = mark_on(day, personal) if show_holidays else None
+    items = events_on(memos, day, skip_daily=False, include_done=True)
+    holiday = mark_on(day, personal, include_official=show_holidays)
 
     radius = s(10)
+    photo = getattr(s, "picture_background", False)
     if is_today:
         draw.rounded_rectangle(
             (x0, y0, x1, y1),
             radius=radius,
-            fill=with_alpha(theme.accent, 38),
+            fill=with_alpha(theme.accent, 32 if photo else 55),
             outline=with_alpha(theme.accent, 210),
-            width=max(s(2), 1),
+            width=max(s(3), 2),
         )
+    elif is_past and in_month:
+        draw.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=with_alpha(theme.muted, 12 if photo else 28))
     elif holiday and holiday.kind == "off":
         draw.rounded_rectangle(
             (x0, y0, x1, y1),
             radius=radius,
-            fill=with_alpha(theme.weekend, 36),
+            fill=with_alpha(theme.weekend, 20 if photo else 36),
         )
     elif holiday and holiday.kind == "leave":
         draw.rounded_rectangle(
             (x0, y0, x1, y1),
             radius=radius,
-            fill=with_alpha(theme.life, 36),
+            fill=with_alpha(theme.life, 20 if photo else 36),
         )
     elif in_month and items:
         draw.rounded_rectangle(
             (x0, y0, x1, y1),
             radius=radius,
-            fill=with_alpha(theme.text, 12),
+            fill=with_alpha(theme.text, 8 if photo else 12),
         )
     else:
         draw.rounded_rectangle(
             (x0, y0, x1, y1),
             radius=radius,
-            fill=with_alpha(theme.text, 6),
+            fill=with_alpha(theme.text, 4 if photo else 6),
         )
 
     if not in_month:
@@ -393,32 +402,32 @@ def _draw_day_cell(
     else:
         num_fill = theme.text
 
-    num_font = font(s(18), bold=True)
+    num_font = font(s.text(18), bold=True)
     put_text(draw, (x0 + s(10), y0 + s(6)), str(day.day), num_font, num_fill)
 
     badge = ""
     badge_color = theme.muted
     if holiday and holiday.kind == "off":
         badge, badge_color = "休", theme.weekend
-    elif holiday and holiday.kind == "leave":
-        badge, badge_color = "年", theme.life
+    elif holiday:
+        badge, badge_color = {"leave": "年", "rest": "休", "work": "班"}.get(holiday.kind, "假"), theme.life
     elif is_today:
         badge, badge_color = "今天", theme.accent
     elif in_month:
         pending_n = sum(1 for m in items if not is_done(m, day))
         done_n = sum(1 for m in items if is_done(m, day))
         if pending_n or done_n:
-            badge = f"{pending_n}" if not done_n else f"{done_n}✓" if not pending_n else f"{pending_n}/{pending_n + done_n}"
+            badge = f"{pending_n}" if not done_n else f"完{done_n}" if not pending_n else f"{pending_n}/{pending_n + done_n}"
             badge_color = theme.muted if is_past else theme.accent
     if is_today and holiday:
-        badge = {"off": "今休", "leave": "今年"}.get(holiday.kind, "今天")
+        badge = "今天"
         badge_color = theme.accent
     if badge:
         put_text(
             draw,
             (x1 - s(10), y0 + s(8)),
             badge,
-            font(s(13), bold=True if holiday or is_today else False),
+            font(s.text(13), bold=True if holiday or is_today else False),
             badge_color,
             anchor="rt",
         )
@@ -429,33 +438,33 @@ def _draw_day_cell(
         color = theme.weekend if holiday.kind == "off" else theme.life
         extra_lines.append((label, color))
 
-    line_h = s(22)
-    text_top = y0 + s(32)
+    line_h = s.text(14) + max(2, s(3))
+    text_top = y0 + max(s(28), s.text(18) + s(7))
     if extra_lines:
         put_text(
             draw,
             (x0 + s(10), text_top),
-            ellipsize(draw, extra_lines[0][0], font(s(13), bold=True), (x1 - s(12)) - (x0 + s(10))),
-            font(s(13), bold=True),
+            ellipsize(draw, extra_lines[0][0], font(s.text(13), bold=True), (x1 - s(12)) - (x0 + s(10))),
+            font(s.text(13), bold=True),
             extra_lines[0][1],
         )
-        text_top += s(20)
+        text_top += s.text(13) + s(8)
 
     if not items:
         return
     avail = y1 - text_top - s(6)
-    max_lines = max(1, int(avail // line_h))
-    shown = items[:max_lines]
-    leftover = len(items) - len(shown)
-    if leftover > 0 and max_lines >= 1:
-        shown = items[: max_lines - 1]
-        leftover = len(items) - len(shown)
-
-    title_font = font(s(14))
-    for i, memo in enumerate(shown):
-        yy = text_top + i * line_h
-        if yy + s(16) > y1 - s(4):
+    max_lines = max(0, int(avail // line_h))
+    title_font = font(s.text(14))
+    used_lines = 0
+    shown_count = 0
+    for i, memo in enumerate(items):
+        remaining = max_lines - used_lines
+        if remaining <= (1 if i < len(items) - 1 else 0):
             break
+        # Reserve one line per following item, or one overflow indicator.
+        reserve = min(len(items) - i - 1, max(0, remaining - 1))
+        budget = min(2, remaining - reserve)
+        yy = text_top + used_lines * line_h
         done = is_done(memo, day)
         color = tag_color(theme, memo.get("tag") or "life")
         if done or not in_month:
@@ -469,24 +478,28 @@ def _draw_day_cell(
         title = memo.get("title") or ""
         time_text = memo.get("time") or ""
         label = f"{time_text} {title}".strip() if time_text else title
+        text_x = bar_x + s(12)
         if done:
-            label = f"✓ {label}"
+            tick = max(8, s.text(12))
+            draw.line([(text_x, yy + tick * .55), (text_x + tick * .35, yy + tick * .9),
+                       (text_x + tick, yy + tick * .15)], fill=theme.accent, width=max(2, s(2)))
+            text_x += tick + s(5)
         fill = theme.faint if (done or not in_month) else theme.text
         if is_past and in_month and not done:
             fill = theme.muted
-        text = ellipsize(draw, label, title_font, (x1 - s(10)) - (bar_x + s(10)))
-        put_text(draw, (bar_x + s(10), yy + s(1)), text, title_font, fill)
+        lines = wrap_text(draw, label, title_font, (x1 - s(10)) - text_x, budget)
+        if not lines:
+            break
+        for line_index, text in enumerate(lines):
+            put_text(draw, (text_x, yy + line_index * line_h + s(1)), text, title_font, fill)
+        used_lines += len(lines)
+        shown_count += 1
 
-    if leftover > 0:
-        yy = text_top + len(shown) * line_h
-        if yy + s(14) < y1 - s(2):
-            put_text(
-                draw,
-                (x0 + s(10), yy),
-                f"还有 {leftover} 件",
-                font(s(12)),
-                theme.muted,
-            )
+    leftover = len(items) - shown_count
+    if leftover > 0 and used_lines < max_lines:
+        put_text(draw, (x0 + s(10), text_top + used_lines * line_h),
+                 ellipsize(draw, f"还有 {leftover} 件 · 打开壁历查看", font(s.text(12)), x1-x0-s(20)), font(s.text(12)), theme.muted)
+
 
 
 def refresh_wallpaper(state: dict[str, Any], apply: bool = True) -> Path:

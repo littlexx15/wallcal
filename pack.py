@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import zipfile
 import sys
 from pathlib import Path
 
@@ -51,6 +52,11 @@ def main() -> None:
     ]
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=ROOT)
+    with zipfile.ZipFile(dist / f"{NAME}-Windows.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.write(dist / f"{NAME}.exe", f"{NAME}/{NAME}.exe")
+        for name in ("运行前须知.txt", "卸载与恢复说明.txt"):
+            content = (ROOT / name).read_text(encoding="utf-8-sig").replace("{version}", __version__)
+            archive.writestr(f"{NAME}/{name}", content.encode("utf-8-sig"))
     print(f"ok: {dist / (NAME + '.exe')}")
 
 
