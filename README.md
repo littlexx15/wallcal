@@ -4,7 +4,7 @@
 
 把当月日历和每天的安排画成桌面壁纸。选一天，写下备忘，桌面随之更新。
 
-[下载最新版](https://github.com/littlexx15/wallcal/releases/latest) · [运行前须知](运行前须知.txt) · [卸载与恢复说明](卸载与恢复说明.txt) · [群内更新文案](docs/小红书群更新文案.md)
+[下载最新版](https://github.com/littlexx15/wallcal/releases/latest) · [运行前须知](运行前须知.txt) · [卸载与恢复说明](卸载与恢复说明.txt)
 
 ## 新版更新：用自己的图片做整套主题
 
