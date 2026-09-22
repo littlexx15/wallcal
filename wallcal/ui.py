@@ -21,7 +21,7 @@ from .holidays import (
     year_groups,
 )
 from .icon import ensure_icon
-from .memos import is_done, memos_on, pending_on, toggle_done
+from .memos import is_done, memos_on, pending_on, toggle_done, reschedule_once
 from .paths import ICON_PATH
 from .storage import ensure_welcome, load, new_memo, remember_deleted, save, touch_memo
 from . import sync as cloudsync
@@ -116,6 +116,7 @@ class WallCalWindow(SettingsDialogs, ctk.CTk):
         self._icon_probe_busy = False
         self._icon_signature = None
         self._icon_candidate = None
+        self._layout_help_shown = False
         self._icon_results = queue.SimpleQueue()
         self._day_buttons: dict[date, ctk.CTkButton] = {}
         self._memo_rows = []
@@ -382,6 +383,13 @@ class WallCalWindow(SettingsDialogs, ctk.CTk):
         )
         # The editor is always visible above the independently scrolling list.
 
+        self.edit_date_row = ctk.CTkFrame(form, fg_color="transparent")
+        ctk.CTkLabel(self.edit_date_row, text="日期").pack(side="left", padx=(0, 6))
+        self.edit_date_entry = ctk.CTkEntry(self.edit_date_row, width=125, placeholder_text="YYYY-MM-DD")
+        self.edit_date_entry.pack(side="left")
+        self.edit_date_hint = ctk.CTkLabel(self.edit_date_row, text="格式：2026-09-23")
+        self.edit_date_hint.pack(side="left", padx=8)
+
         self.title_entry = ctk.CTkEntry(
             form,
             placeholder_text="例如：下午三点开会",
@@ -647,15 +655,30 @@ class WallCalWindow(SettingsDialogs, ctk.CTk):
         if self.editing_id:
             memo = next((m for m in self.store["memos"] if m["id"] == self.editing_id), None)
             if memo:
+                try:
+                    raw_date = self.edit_date_entry.get().strip()
+                    target = date.fromisoformat(raw_date)
+                    if target.isoformat() != raw_date or not 1900 <= target.year <= 9998:
+                        raise ValueError("日期请写成 YYYY-MM-DD，例如 2026-09-23")
+                    if (memo.get("repeat") or "none") != "none" or repeat != "none":
+                        if raw_date != memo["date"]:
+                            raise ValueError("重复事项暂不支持改期，请保持原日期")
+                    else:
+                        reschedule_once(memo, target)
+                        self.selected = target
+                        self.view_year, self.view_month = target.year, target.month
+                except ValueError as exc:
+                    messagebox.showwarning("日期无法保存", str(exc), parent=self)
+                    return
                 memo["title"] = title
                 memo["time"] = time_value
                 memo["tag"] = tag
                 memo["repeat"] = repeat
-                memo["date"] = self.selected.isoformat()
                 touch_memo(memo)
             self.editing_id = None
             self.submit_btn.configure(text="添加备忘")
             self.cancel_edit_btn.grid_forget()
+            self.edit_date_row.grid_forget()
             self._set_status("备忘已更新，壁纸即将刷新")
         else:
             self.store["memos"].append(
@@ -677,6 +700,13 @@ class WallCalWindow(SettingsDialogs, ctk.CTk):
 
     def _start_edit(self, memo: dict[str, Any]) -> None:
         self.editing_id = memo["id"]
+        repeating = (memo.get("repeat") or "none") != "none"
+        self.edit_date_entry.configure(state="normal")
+        self.edit_date_entry.delete(0, "end")
+        self.edit_date_entry.insert(0, memo["date"])
+        self.edit_date_entry.configure(state="disabled" if repeating else "normal")
+        self.edit_date_hint.configure(text="重复事项暂不支持改期" if repeating else "YYYY-MM-DD · 可改期")
+        self.edit_date_row.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 6))
         self.title_entry.delete(0, "end")
         self.title_entry.insert(0, memo.get("title") or "")
         self.time_entry.delete(0, "end")
@@ -687,6 +717,7 @@ class WallCalWindow(SettingsDialogs, ctk.CTk):
         self.cancel_edit_btn.grid(row=4, column=0, columnspan=3, sticky="e", pady=(8, 0))
 
     def _cancel_edit(self) -> None:
+        self.edit_date_row.grid_forget()
         self.editing_id = None
         self.submit_btn.configure(text="添加备忘")
         self.cancel_edit_btn.grid_forget()
@@ -1064,6 +1095,12 @@ class WallCalWindow(SettingsDialogs, ctk.CTk):
                     continue
                 if error:
                     self._set_status(f"壁纸更新失败：{error}")
+                    if ("连续空白区域" in error or "桌面图标" in error) and self.store["settings"].get("layout") == "auto" and not self._layout_help_shown:
+                        self._layout_help_shown = True
+                        if messagebox.askyesno("自动布局无法完成", "当前桌面无法找到足够空白区域，或无法读取图标位置。\n\n是否切换为全屏日历？不会移动或隐藏桌面图标。\n如使用动态壁纸或桌面整理软件，请先退出或在其设置中调整。", parent=self):
+                            self.store["settings"]["layout"] = "full"
+                            self._persist()
+                            self.refresh_wallpaper_async("已切换全屏，正在生成日历…")
                 elif self.store["settings"].get("wallpaper_enabled", True):
                     self._apply_rendered_wallpaper(path)
             if self._render_request is not None and not self._refreshing:

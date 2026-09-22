@@ -1,3 +1,3 @@
-__version__ = "1.5.5"
+__version__ = "1.5.7"
 APP_NAME = "壁历"
 APP_ID = "wallcal"

@@ -246,13 +246,14 @@ class SettingsDialogs:
         ctk.CTkButton(frame, text="导出所选日期的 CSV", command=export).pack(fill="x", pady=16)
         ctk.CTkLabel(frame, text="JSON 备份包含全部日期的数据，与上面的导出范围无关。", wraplength=480).pack(anchor="w", pady=8)
         ctk.CTkButton(frame, text="备份全部数据", command=backup).pack(fill="x", pady=8)
-        ctk.CTkButton(frame, text="从备份恢复…", command=lambda: self._restore_backup(dialog)).pack(fill="x", pady=8)
+        ctk.CTkLabel(frame, text="正常升级会自动沿用原数据，无需重写。旧版数据位置：%APPDATA%\\WallCal\\data.json。导入会替换本机数据，并先自动备份。CSV 为留档格式，请用 JSON 迁移。", wraplength=480, justify="left").pack(anchor="w", pady=8)
+        ctk.CTkButton(frame, text="导入旧版数据 / 恢复 JSON 备份…", command=lambda: self._restore_backup(dialog)).pack(fill="x", pady=8)
 
     def _restore_backup(self, parent) -> None:
         if self._sync_busy:
             messagebox.showinfo("请稍后", "正在云同步，请完成后再恢复备份。", parent=parent)
             return
-        path = filedialog.askopenfilename(parent=parent, filetypes=[("壁历备份", "*.json")])
+        path = filedialog.askopenfilename(parent=parent, title="选择旧版 data.json 或壁历 JSON 备份", filetypes=[("壁历数据 / 备份", "*.json")])
         if not path:
             return
         try:

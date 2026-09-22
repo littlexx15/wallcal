@@ -81,6 +81,38 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(wrap_text(draw, title * 4, fnt, 160, 2)[-1].endswith("…"))
         self.assertEqual(set(theme_choices({}).values()), {"eye", "ink"})
 
+    def test_reschedule_once_keeps_status_and_identity(self):
+        from wallcal.memos import reschedule_once, occurs_on, is_done
+        old, target = date(2026, 12, 31), date(2027, 1, 1)
+        for completed in (False, True):
+            memo = storage.new_memo(title="开会", day=old, time="09:30", tag="work")
+            memo["done_dates"] = [old.isoformat()] if completed else []
+            original = deepcopy(memo)
+            reschedule_once(memo, target)
+            self.assertFalse(occurs_on(memo, old))
+            self.assertTrue(occurs_on(memo, target))
+            self.assertEqual(is_done(memo, target), completed)
+            for key in ("id", "title", "time", "tag"):
+                self.assertEqual(memo[key], original[key])
+            memo["repeat"] = "weekly"
+            original = deepcopy(memo)
+            with self.assertRaises(ValueError): reschedule_once(memo, old)
+            self.assertEqual(memo, original)
+
+    def test_import_v12_plain_data(self):
+        state = self.state()
+        state["settings"] = {"theme": "paper", "first_run": False, "background": "missing-local-file"}
+        path = Path(TEST_ROOT.name) / "v12-data.json"
+        path.write_text(json.dumps(state), encoding="utf-8-sig")
+        restored, images = dataio.read_backup(path)
+        self.assertEqual(restored["memos"], state["memos"])
+        self.assertEqual(restored["personal_holidays"], state["personal_holidays"])
+        self.assertEqual(restored["settings"]["background"], "")
+        self.assertFalse(images)
+        state["memos"][0]["date"] = "invalid"
+        path.write_text(json.dumps(state), encoding="utf-8")
+        with self.assertRaises(ValueError): dataio.read_backup(path)
+
     def test_time_input(self):
         for value in ("9:30", "9：30", " ０９：３０ ", "09 : 30"):
             self.assertEqual(parse_time(value), "09:30")

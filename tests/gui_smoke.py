@@ -133,6 +133,31 @@ with patch("wallcal.winwallpaper.set_wallpaper") as apply, patch("wallcal.ui.clo
         card = app._memo_rows[0]
         card._buttons[1].invoke()
         assert app.editing_id == card._memo["id"], "pooled edit button targets stale memo"
+        edited = card._memo
+        original_day = date.fromisoformat(edited["date"])
+        target_day = original_day + timedelta(days=35)
+        edited["done_dates"] = [original_day.isoformat()]
+        original_id = edited["id"]
+        app.edit_date_entry.delete(0, "end")
+        app.edit_date_entry.insert(0, "2026-02-30")
+        with patch("wallcal.ui.messagebox.showwarning") as warning:
+            app._submit_memo()
+            warning.assert_called_once()
+        assert edited["date"] == original_day.isoformat()
+        app.edit_date_entry.delete(0, "end")
+        app.edit_date_entry.insert(0, target_day.isoformat())
+        app._submit_memo()
+        assert edited["id"] == original_id and edited["date"] == target_day.isoformat()
+        assert edited["done_dates"] == [target_day.isoformat()]
+        assert app.selected == target_day and app.view_month == target_day.month
+        saved = storage.load()
+        assert next(m for m in saved["memos"] if m["id"] == original_id)["date"] == target_day.isoformat()
+        edited["repeat"] = "weekly"
+        app._select_day(target_day + timedelta(days=7))
+        app._start_edit(edited)
+        assert app.edit_date_entry.cget("state") == "disabled"
+        app._submit_memo()
+        assert edited["date"] == target_day.isoformat(), "editing changed repeat anchor"
         app._cancel_edit()
         from wallcal.themes import image_palette, theme_from_settings
         from PIL import Image

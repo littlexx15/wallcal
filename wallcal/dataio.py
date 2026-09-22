@@ -50,6 +50,12 @@ def read_backup(path: Path) -> tuple[dict[str, Any], dict[str, bytes]]:
     if path.stat().st_size > 80 * 1024 * 1024:
         raise ValueError("备份文件过大")
     data = json.loads(path.read_text(encoding="utf-8-sig"))
+    # v1.2 stores plain state in data.json, without the backup envelope.
+    if isinstance(data, dict) and "app" not in data and isinstance(data.get("memos"), list) and isinstance(data.get("settings"), dict):
+        legacy = deepcopy(data)
+        # Import calendar data, not machine-local paths or window preferences.
+        legacy["settings"] = deepcopy(DEFAULT_STATE["settings"])
+        data = {"app": "wallcal", "backup_version": 1, "state": legacy}
     if not isinstance(data, dict) or data.get("app") != "wallcal" or data.get("backup_version") != 1:
         raise ValueError("请选择壁历导出的 JSON 备份")
     raw = data.get("state")

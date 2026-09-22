@@ -158,3 +158,14 @@ def _sort_key(day: date):
         return (done, time, memo.get("created_at") or "")
 
     return key
+
+
+def reschedule_once(memo: dict[str, Any], target: date) -> None:
+    if (memo.get("repeat") or "none") != "none":
+        raise ValueError("重复事项暂不支持改期")
+    old = memo["date"]
+    if old == target.isoformat():
+        return
+    done = old in (memo.get("done_dates") or [])
+    memo["date"] = target.isoformat()
+    memo["done_dates"] = [target.isoformat()] if done else []
