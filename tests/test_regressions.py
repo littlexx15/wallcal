@@ -113,6 +113,38 @@ class RegressionTests(unittest.TestCase):
         path.write_text(json.dumps(state), encoding="utf-8")
         with self.assertRaises(ValueError): dataio.read_backup(path)
 
+    def test_monitor_selection_switch_restore_and_disconnect(self):
+        from wallcal import monitors
+        from contextlib import contextmanager
+        class Fake:
+            attached = [{"id":"a", "rect":(0,0,1920,1080),"primary":True},
+                        {"id":"b", "rect":(-1280,0,0,1024),"primary":False}]
+            paths = {"a":"original-a", "b":"original-b"}
+            calls = []
+            def screens(self): return self.attached
+            def get(self,key): return self.paths[key]
+            def set(self,key,path):
+                self.calls.append((key,path)); self.paths[key]=path
+            def call(self,*args): pass
+        api = Fake()
+        @contextmanager
+        def connection(): yield api
+        state = {"originals":{},"active":"","applied":{}}
+        with patch.object(monitors,"desktop",connection), patch.object(monitors,"_load",lambda:state), patch.object(monitors,"_save"), patch.object(monitors,"_backup",side_effect=lambda value:value), patch.object(Path,"is_file",return_value=True):
+            monitors.apply("calendar-a","a")
+            self.assertEqual(api.paths["b"],"original-b")
+            monitors.apply("calendar-b","b")
+            self.assertEqual(api.paths["a"],"original-a")
+            self.assertEqual(api.paths["b"],"calendar-b")
+            api.attached=api.attached[:1]
+            calls=list(api.calls)
+            with self.assertRaises(OSError): monitors.apply("new","b")
+            self.assertEqual(api.calls,calls)
+            api.attached.append({"id":"b","rect":(-1280,0,0,1024),"primary":False})
+            self.assertTrue(monitors.restore())
+            self.assertEqual(api.paths["b"],"original-b")
+        self.assertEqual(monitors.local_icons((-1280,0,0,1024),[(-1200,30,-1150,80),(30,30,80,80)]),[(80,30,130,80)])
+
     def test_time_input(self):
         for value in ("9:30", "9：30", " ０９：３０ ", "09 : 30"):
             self.assertEqual(parse_time(value), "09:30")

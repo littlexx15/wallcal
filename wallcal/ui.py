@@ -1089,6 +1089,9 @@ class WallCalWindow(SettingsDialogs, ctk.CTk):
             while not self._render_results.empty():
                 generation, path, error = self._render_results.get_nowait()
                 self._refreshing = False
+                monitor_id = None
+                if isinstance(path, tuple):
+                    path, monitor_id = path
                 if generation != self._render_generation:
                     if path:
                         path.unlink(missing_ok=True)
@@ -1102,14 +1105,15 @@ class WallCalWindow(SettingsDialogs, ctk.CTk):
                             self._persist()
                             self.refresh_wallpaper_async("已切换全屏，正在生成日历…")
                 elif self.store["settings"].get("wallpaper_enabled", True):
-                    self._apply_rendered_wallpaper(path)
+                    self._apply_rendered_wallpaper(path, monitor_id)
             if self._render_request is not None and not self._refreshing:
                 generation, snapshot = self._render_request
                 self._render_request = None
                 self._refreshing = True
                 def render_job(generation=generation, snapshot=snapshot):
                     try:
-                        self._render_results.put((generation, render_wallpaper(snapshot, apply=False), None))
+                        path = render_wallpaper(snapshot, apply=False)
+                        self._render_results.put((generation, (path, snapshot["settings"].get("_resolved_monitor_id", "")), None))
                     except Exception as exc:
                         self._render_results.put((generation, None, str(exc)))
                 threading.Thread(target=render_job, daemon=True).start()
@@ -1142,7 +1146,8 @@ class WallCalWindow(SettingsDialogs, ctk.CTk):
             return
         try:
             from .winwallpaper import screen_size
-            screen = (screen_size(), work_area())
+            from .monitors import screens
+            screen = (screen_size(), work_area(), tuple((m["id"], m["rect"]) for m in screens()))
             if date.today() != self._last_day:
                 self._last_day = date.today()
                 self.on_new_day()
@@ -1229,11 +1234,11 @@ class WallCalWindow(SettingsDialogs, ctk.CTk):
             self.store["settings"]["window"] = {"width": round(self.winfo_width()/scale), "height": round(self.winfo_height()/scale), "x": self.winfo_x(), "y": self.winfo_y()}
             save(self.store)
 
-    def _apply_rendered_wallpaper(self, path) -> None:
+    def _apply_rendered_wallpaper(self, path, monitor_id=None) -> None:
         try:
             from .winwallpaper import set_wallpaper
 
-            set_wallpaper(path)
+            set_wallpaper(path, monitor_id=monitor_id if monitor_id is not None else self.store["settings"].get("monitor_id", ""))
             self._set_status("桌面壁纸已更新。日期会自动刷新，可在显示设置中恢复原壁纸。")
             from .paths import DATA_DIR
             files = sorted(DATA_DIR.glob("desktop_*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)

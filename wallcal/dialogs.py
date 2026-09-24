@@ -56,6 +56,23 @@ class SettingsDialogs:
         settings = self.store["settings"]
         def label(text):
             ctk.CTkLabel(frame, text=text, anchor="w").pack(fill="x", pady=(12, 4))
+        label("日历显示屏幕 · 只更新选中的屏幕")
+        from .monitors import screens
+        monitor_options = {"主屏幕（默认）": ""}
+        try:
+            for index, item in enumerate(screens(), 1):
+                x,y,r,b = item["rect"]
+                name = f"屏幕 {index} · {r-x}×{b-y}" + (" · 主屏幕" if item["primary"] else "")
+                monitor_options[name] = item["id"]
+        except OSError as exc:
+            label(str(exc))
+        selected_monitor = settings.get("monitor_id", "")
+        if selected_monitor not in monitor_options.values():
+            monitor_options["已选屏幕（未连接）"] = selected_monitor
+        monitor_menu = ctk.CTkOptionMenu(frame, values=list(monitor_options), width=290)
+        monitor_menu.set(next(k for k,v in monitor_options.items() if v == selected_monitor))
+        monitor_menu.pack(anchor="w")
+        ctk.CTkLabel(frame, text="选定屏幕断开后暂停更新。切换屏幕时恢复原屏幕；使用扩展桌面模式。", wraplength=480).pack(anchor="w", pady=6)
         label("日历布局 · 自动读取图标位置，无需计算比例")
         layouts = {"自动避让图标（推荐）": "auto", "全屏": "full"}
         layout = ctk.CTkOptionMenu(frame, values=list(layouts), width=200)
@@ -132,7 +149,7 @@ class SettingsDialogs:
         font_menu.configure(command=schedule_preview)
         schedule_preview()
         def apply():
-            self.store["settings"].update(layout=layouts[layout.get()], font_scale=fonts[font_menu.get()],
+            self.store["settings"].update(monitor_id=monitor_options[monitor_menu.get()], layout=layouts[layout.get()], font_scale=fonts[font_menu.get()],
                 ui_scale=scales[ui_menu.get()], high_contrast=contrast.get(), background=background[0],
                 background_visibility=round(visibility.get()), wallpaper_enabled=True)
             self._persist()
@@ -149,7 +166,8 @@ class SettingsDialogs:
                 return
             try:
                 from .winwallpaper import choose_original
-                choose_original(Path(source))
+                from .monitors import choose_backup
+                choose_backup(Path(source), self.store["settings"].get("monitor_id", ""))
                 messagebox.showinfo("已保存", "原壁纸副本已保存。点击“停止更新并恢复原壁纸”即可恢复。", parent=dialog)
             except Exception as exc:
                 messagebox.showerror("备份失败", str(exc), parent=dialog)
@@ -174,7 +192,7 @@ class SettingsDialogs:
         self._render_request = None
         save(self.store)
         try:
-            restore_original()
+            restore_original(monitor_id=self.store["settings"].get("monitor_id", ""))
             self._set_status("已停止自动更新并恢复原壁纸；点“刷新壁纸”可重新启用。")
         except Exception as exc:
             messagebox.showinfo("已停止壁纸更新", str(exc), parent=parent or self)
@@ -263,7 +281,7 @@ class SettingsDialogs:
             backup_path = DATA_DIR / f"before_restore_{datetime.now():%Y%m%d_%H%M%S_%f}.json"
             dataio.write_backup(self.store, backup_path)
             # Keep device-specific preferences local.
-            for key in ("autostart", "window", "wallpaper_enabled"):
+            for key in ("autostart", "window", "wallpaper_enabled", "monitor_id"):
                 if key in self.store["settings"]:
                     restored["settings"][key] = self.store["settings"][key]
             restored["settings"]["first_run"] = False

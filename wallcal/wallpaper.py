@@ -172,7 +172,15 @@ def render_wallpaper_image(
     memos = state.get("memos") or []
     show_holidays = bool(state.get("settings", {}).get("show_holidays", True))
     personal = state.get("personal_holidays") or []
-    width, height = size or screen_size()
+    target = None
+    if size is None:
+        from .monitors import resolve
+        target = resolve(settings.get("monitor_id", ""))
+        settings["_resolved_monitor_id"] = target["id"]
+        x0,y0,x1,y1 = target["rect"]
+        width,height = x1-x0,y1-y0
+    else:
+        width,height = size
     s = Scale(width, height)
     s.font_scale = float(settings.get("font_scale", 1.0))
 
@@ -190,7 +198,7 @@ def render_wallpaper_image(
     bottom = height - max(64, s(80))
     left = margin
     right = width - margin
-    if size is None:
+    if size is None and target["primary"]:
         from .winwallpaper import work_area
         wx0, wy0, wx1, wy1 = work_area()
         left = max(left, wx0 + margin)
@@ -204,6 +212,9 @@ def render_wallpaper_image(
         icons = settings.get("_icon_rectangles")
         if icons is None:
             icons = icon_rectangles() if size is None else []
+        if target is not None:
+            from .monitors import local_icons
+            icons = local_icons(target["rect"], icons)
         left, top, right, bottom = free_rectangle((left,top,right,bottom), icons,
             padding=max(12,s(18)), minimum=(max(440,s(650)),max(300,s(480))))
     elif layout != "full":
@@ -249,7 +260,7 @@ def render_wallpaper(
     except OSError:
         pass
     if apply:
-        set_wallpaper(out)
+        set_wallpaper(out, monitor_id=state.get("settings", {}).get("_resolved_monitor_id", ""))
     return out
 
 

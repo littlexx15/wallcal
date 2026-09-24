@@ -76,15 +76,24 @@ def _apply(path: str, style: str, tile: str) -> None:
         raise OSError("Windows 未能应用壁纸，请重试")
     # Windows owns its theme cache. Never delete it after setting a wallpaper.
 
-def set_wallpaper(image_path: Path) -> None:
+def set_wallpaper(image_path: Path, monitor_id: str | None = None) -> None:
     path = Path(image_path).resolve()
     from PIL import Image
     with Image.open(path) as image:
         image.verify()
+    if monitor_id is not None:
+        from .monitors import apply
+        apply(path, monitor_id)
+        return
     capture_original()
     _apply(str(path), "10", "0")
 
-def restore_original() -> None:
+def restore_original(monitor_id: str | None = None) -> None:
+    if monitor_id is not None:
+        from .monitors import restore
+        if not restore():
+            raise OSError("此屏幕尚无本版应用记录，请在 Windows 个性化中选择壁纸，或先应用日历后恢复。")
+        return
     if not ORIGINAL.exists():
         raise FileNotFoundError("未找到原壁纸备份（旧版无法补回原图）。已停止更新，请在 Windows 个性化设置中选择背景。")
     values = json.loads(ORIGINAL.read_text(encoding="utf-8"))

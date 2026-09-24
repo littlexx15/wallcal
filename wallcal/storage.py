@@ -20,6 +20,7 @@ DEFAULT_STATE: dict[str, Any] = {
         "show_holidays": True,
         "wallpaper_enabled": True,
         "layout": "auto",
+        "monitor_id": "",
         "font_scale": 1.0,
         "ui_scale": 1.0,
         "high_contrast": True,
