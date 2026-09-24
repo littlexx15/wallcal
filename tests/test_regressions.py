@@ -145,6 +145,33 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(api.paths["b"],"original-b")
         self.assertEqual(monitors.local_icons((-1280,0,0,1024),[(-1200,30,-1150,80),(30,30,80,80)]),[(80,30,130,80)])
 
+    def test_bad_monitor_record_does_not_hide_connected_screens(self):
+        from wallcal.monitors import Desktop
+        api = object.__new__(Desktop)
+        api.string = lambda slot, types, index: str(index)
+        def call(slot, types, *args):
+            if slot == 6:
+                args[0]._obj.value = 3
+                return 0
+            key, out = args
+            if key == "1": raise OSError("80004005")
+            rect = out._obj
+            rect.left = 0 if key == "0" else 1920
+            rect.top = 0
+            rect.right = rect.left + 1920
+            rect.bottom = 1080
+            return 0
+        api.call = call
+        self.assertEqual([m["id"] for m in api.screens()], ["0", "2"])
+        def all_bad(slot, types, *args):
+            if slot == 6:
+                args[0]._obj.value = 1
+                return 0
+            raise OSError("80004005")
+        api.call = all_bad
+        with self.assertRaisesRegex(OSError, "无法读取可用屏幕"):
+            api.screens()
+
     def test_time_input(self):
         for value in ("9:30", "9：30", " ０９：３０ ", "09 : 30"):
             self.assertEqual(parse_time(value), "09:30")

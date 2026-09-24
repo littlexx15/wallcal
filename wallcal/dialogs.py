@@ -59,16 +59,18 @@ class SettingsDialogs:
         label("日历显示屏幕 · 只更新选中的屏幕")
         from .monitors import screens
         monitor_options = {"主屏幕（默认）": ""}
+        monitor_read_failed = False
         try:
             for index, item in enumerate(screens(), 1):
                 x,y,r,b = item["rect"]
                 name = f"屏幕 {index} · {r-x}×{b-y}" + (" · 主屏幕" if item["primary"] else "")
                 monitor_options[name] = item["id"]
         except OSError as exc:
+            monitor_read_failed = True
             label(str(exc))
         selected_monitor = settings.get("monitor_id", "")
         if selected_monitor not in monitor_options.values():
-            monitor_options["已选屏幕（未连接）"] = selected_monitor
+            monitor_options["已选屏幕（读取失败）" if monitor_read_failed else "已选屏幕（未连接或不可用）"] = selected_monitor
         monitor_menu = ctk.CTkOptionMenu(frame, values=list(monitor_options), width=290)
         monitor_menu.set(next(k for k,v in monitor_options.items() if v == selected_monitor))
         monitor_menu.pack(anchor="w")

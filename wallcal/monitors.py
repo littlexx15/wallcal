@@ -39,13 +39,22 @@ class Desktop:
         count = w.UINT()
         self.call(6, [c.POINTER(w.UINT)], c.byref(count))
         result = []
+        errors = []
         for i in range(count.value):
-            key = self.string(5, [w.UINT], i)
-            rect = w.RECT()
-            hr = self.call(7, [w.LPCWSTR, c.POINTER(w.RECT)], key, c.byref(rect))
-            if hr == 1 or rect.right <= rect.left or rect.bottom <= rect.top: continue
-            bounds = (rect.left, rect.top, rect.right, rect.bottom)
-            result.append({"id": key, "rect": bounds, "primary": rect.left == 0 and rect.top == 0})
+            try:
+                key = self.string(5, [w.UINT], i)
+                rect = w.RECT()
+                hr = self.call(7, [w.LPCWSTR, c.POINTER(w.RECT)], key, c.byref(rect))
+                if hr == 1 or rect.right <= rect.left or rect.bottom <= rect.top:
+                    continue
+                bounds = (rect.left, rect.top, rect.right, rect.bottom)
+                result.append({"id": key, "rect": bounds, "primary": rect.left == 0 and rect.top == 0})
+            except OSError as exc:
+                # Windows can retain unavailable display records. One bad record
+                # must not hide other attached, usable monitors.
+                errors.append(str(exc))
+        if not result and errors:
+            raise OSError("无法读取可用屏幕，请重新连接屏幕或稍后重试。" + errors[0])
         return result
     def get(self, key): return self.string(4, [w.LPCWSTR], key)
     def set(self, key, path):
@@ -68,7 +77,7 @@ def resolve(key="", available=None):
     available = screens() if available is None else available
     for item in available:
         if (key and item["id"] == key) or (not key and item["primary"]): return item
-    raise OSError("选定屏幕已断开，已暂停壁纸更新。请连接屏幕或在显示设置中重新选择。")
+    raise OSError("选定屏幕未连接或暂时无法读取，已暂停壁纸更新。请连接屏幕或在显示设置中重新选择。")
 
 def local_icons(rect, icons):
     x,y,r,b = rect

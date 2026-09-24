@@ -1,6 +1,6 @@
 # 壁历 WallCal
 
-**v1.5.8 · Windows 桌面日历备忘录**
+**v1.5.9 · Windows 桌面日历备忘录**
 
 把当月日历和每天的安排画成桌面壁纸。选一天，写下备忘，桌面随之更新。
 
@@ -62,7 +62,7 @@
 ## 下载与使用
 
 1. 前往 [GitHub Releases](https://github.com/littlexx15/wallcal/releases/latest)。
-2. 下载 `WallCal-1.5.8-Windows.zip`，解压并阅读包内运行须知。
+2. 下载 `WallCal-1.5.9-Windows.zip`，解压并阅读包内运行须知。
 3. 双击 exe 即可使用，无需安装 Python。
 4. 左侧选择日期，在右侧输入安排；通过「显示设置」调整桌面效果。
 
@@ -94,7 +94,7 @@ python -m pip install pyinstaller
 python pack.py
 ```
 
-输出 `dist\WallCal-1.5.8.exe` 和 `dist\WallCal-1.5.8-Windows.zip`，压缩包自动附带运行须知与卸载恢复说明。
+输出 `dist\WallCal-1.5.9.exe` 和 `dist\WallCal-1.5.9-Windows.zip`，压缩包自动附带运行须知与卸载恢复说明。
 
 ### 开发验证
 
